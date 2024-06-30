@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced OpenCV Image Processing</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        .container { display: flex; }
+        .image-container, .pipeline-container { flex: 1; margin-right: 20px; }
+        button { margin: 5px; padding: 10px; }
+        img { max-width: 100%; height: auto; }
+        #pipeline { list-style-type: none; padding: 0; }
+        #pipeline li { margin-bottom: 10px; padding: 10px; background-color: #f4f4f4; }
+    </style>
+</head>
+<body>
+    <h1>Advanced OpenCV Image Processing</h1>
+    <input type="file" id="imageInput" accept="image/*">
+    <div class="container">
+        <div class="image-container">
+            <h2>Original Image</h2>
+            <img id="originalImage" src="" alt="Original Image">
+            <h2>Processed Image</h2>
+            <img id="processedImage" src="" alt="Processed Image">
+        </div>
+        <div class="pipeline-container">
+            <h2>Processing Pipeline</h2>
+            <ul id="pipeline"></ul>
+            <button onclick="addOperation('grayscale')">Add Grayscale</button>
+            <button onclick="addOperation('blur')">Add Blur</button>
+            <button onclick="addOperation('edge_detection')">Add Edge Detection</button>
+            <button onclick="addOperation('threshold')">Add Threshold</button>
+            <button onclick="processPipeline()">Process Image</button>
+            <button onclick="savePipeline()">Save Pipeline</button>
+            <button onclick="loadPipeline()">Load Pipeline</button>
+        </div>
+    </div>
+
+    <script>
+        let pipeline = [];
+
+        function addOperation(operation) {
+            console.log('Adding operation:', operation);  // デバッグ用ログ
+            let params = {};
+            if (operation === 'blur') {
+                params = {ksize: 5, sigmaX: 0};
+            } else if (operation === 'edge_detection') {
+                params = {threshold1: 100, threshold2: 200};
+            } else if (operation === 'threshold') {
+                params = {thresh: 127, maxval: 255, type: 0};  // cv2.THRESH_BINARYの代わりに0を使用
+            }
+            pipeline.push({operation, params});
+            updatePipelineView();
+        }
+
+        function updatePipelineView() {
+            console.log('Updating pipeline view');  // デバッグ用ログ
+            const pipelineElement = document.getElementById('pipeline');
+            pipelineElement.innerHTML = '';
+            pipeline.forEach((step, index) => {
+                const li = document.createElement('li');
+                li.textContent = `${index + 1}. ${step.operation}`;
+                const removeButton = document.createElement('button');
+                removeButton.textContent = 'Remove';
+                removeButton.onclick = () => removeOperation(index);
+                li.appendChild(removeButton);
+                pipelineElement.appendChild(li);
+            });
+        }
+
+        function removeOperation(index) {
+            console.log('Removing operation at index:', index);  // デバッグ用ログ
+            pipeline.splice(index, 1);
+            updatePipelineView();
+        }
+
+        function processPipeline() {
+            const input = document.getElementById('imageInput');
+            const file = input.files[0];
+            if (!file) {
+                alert('Please select an image first.');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = document.getElementById('originalImage');
+                img.src = e.target.result;
+
+                fetch('/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: e.target.result, pipeline: pipeline }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    const processedImg = document.getElementById('processedImage');
+                    processedImg.src = 'data:image/jpeg;base64,' + data.image;
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('An error occurred while processing the image.');
+                });
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function savePipeline() {
+            const name = prompt("Enter a name for this pipeline:");
+            if (name) {
+                fetch('/save_pipeline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, pipeline: pipeline }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert(`Pipeline "${data.name}" saved successfully!`);
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('An error occurred while saving the pipeline.');
+                });
+            }
+        }
+
+        function loadPipeline() {
+            fetch('/load_pipeline')
+            .then(response => response.json())
+            .then(data => {
+                pipeline = data.pipeline;
+                updatePipelineView();
+                alert(`Pipeline "${data.name}" loaded successfully!`);
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                alert('An error occurred while loading the pipeline.');
+            });
+        }
+
+        // ページ読み込み時にイベントリスナーを設定
+        document.addEventListener('DOMContentLoaded', (event) => {
+            console.log('DOM fully loaded and parsed');
+            document.querySelectorAll('button').forEach(button => {
+                console.log('Adding click listener to button:', button.textContent);
+                button.addEventListener('click', () => console.log('Button clicked:', button.textContent));
+            });
+        });
+    </script>
+</body>
+</html>

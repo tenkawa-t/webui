@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Advanced OpenCV and Deep Learning Image Processing</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        .container { display: flex; flex-wrap: wrap; }
+        .image-container, .pipeline-container, .code-container { flex: 1 1 300px; margin-right: 20px; margin-bottom: 20px; }
+        .button-group { margin-bottom: 15px; border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
+        .button-group h3 { margin-top: 0; }
+        button { margin: 5px; padding: 10px; }
+        img { max-width: 100%; height: auto; }
+        #pipeline { list-style-type: none; padding: 0; }
+        #pipeline li { margin-bottom: 10px; padding: 10px; background-color: #f4f4f4; }
+        #debugInfo { background-color: #f0f0f0; padding: 10px; margin-top: 20px; white-space: pre-wrap; }
+        #codeDisplay { background-color: #f8f8f8; border: 1px solid #ddd; padding: 10px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <h1>Advanced OpenCV and Deep Learning Image Processing</h1>
+    <input type="file" id="imageInput" accept="image/*">
+    <div class="container">
+        <div class="image-container">
+            <h2>Original Image</h2>
+            <img id="originalImage" src="" alt="Original Image">
+            <h2>Processed Image</h2>
+            <img id="processedImage" src="" alt="Processed Image">
+        </div>
+        <div class="pipeline-container">
+            <h2>Processing Pipeline</h2>
+            <ul id="pipeline"></ul>
+            <div class="button-group">
+                <h3>Preprocessing</h3>
+                <button onclick="addOperation('grayscale')">Add Grayscale</button>
+                <button onclick="addOperation('blur')">Add Blur</button>
+                <button onclick="addOperation('threshold')">Add Threshold</button>
+            </div>
+            <div class="button-group">
+                <h3>Detection / Segmentation</h3>
+                <button onclick="addOperation('yolov5')">YOLOv5</button>
+                <button onclick="addOperation('ssd_mobilenet')">SSD MobileNet</button>
+                <button onclick="addOperation('faster_rcnn')">Faster R-CNN</button>
+                <button onclick="addOperation('retinanet')">RetinaNet</button>
+                <button onclick="addOperation('efficientdet')">EfficientDet</button>
+                <button onclick="addOperation('yolor')">YOLOR</button>
+                <button onclick="addOperation('yolox')">YOLOX</button>
+                <button onclick="addOperation('detr')">DETR</button>
+                <button onclick="addOperation('centernet')">CenterNet</button>
+                <button onclick="addOperation('fcos')">FCOS</button>
+                <button onclick="addOperation('segmentation')">Segmentation (U-Net)</button>
+            </div>
+            <div class="button-group">
+                <h3>Post-processing</h3>
+                <button onclick="addOperation('edge_detection')">Add Edge Detection</button>
+                <button onclick="addOperation('draw_boxes')">Draw Bounding Boxes</button>
+                <button onclick="addOperation('apply_mask')">Apply Segmentation Mask</button>
+            </div>
+            <div class="button-group">
+                <h3>Pipeline Control</h3>
+                <button onclick="processPipeline()">Process Image</button>
+                <button onclick="savePipeline()">Save Pipeline</button>
+                <button onclick="loadPipeline()">Load Pipeline</button>
+            </div>
+            <div class="button-group">
+                <h3>Ground Truth</h3>
+                <button onclick="addGroundTruthBox()">Add Ground Truth Box</button>
+                <div id="groundTruthInputs"></div>
+            </div>
+        </div>
+        <div class="code-container">
+            <h2>Processing Code</h2>
+            <pre id="codeDisplay"></pre>
+        </div>
+    </div>
+    <div id="debugInfo"></div>
+
+    <script>
+        let pipeline = [];
+        const debugInfo = document.getElementById('debugInfo');
+        const codeDisplay = document.getElementById('codeDisplay');
+
+        const codeSnippets = {
+            grayscale: `
+def grayscale(image):
+    return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)`,
+            blur: `
+def blur(image, ksize=5, sigmaX=0):
+    return cv2.GaussianBlur(image, (ksize, ksize), sigmaX)`,
+            edge_detection: `
+def edge_detection(image, threshold1=100, threshold2=200):
+    return cv2.Canny(image, threshold1, threshold2)`,
+            threshold: `
+def threshold(image, thresh=127, maxval=255, type=cv2.THRESH_BINARY):
+    _, result = cv2.threshold(cv2.cvtColor(image, cv2.COLOR_BGR2GRAY), thresh, maxval, type)
+    return result`,
+            yolov5: `
+def yolov5(image):
+    results = yolov5_model(image)
+    return results.render()[0]`,
+            ssd_mobilenet: `
+def ssd_mobilenet(image):
+    blob = cv2.dnn.blobFromImage(image, size=(300, 300), mean=(127.5, 127.5, 127.5), swapRB=True, crop=False)
+    ssd_mobilenet_model.setInput(blob)
+    output = ssd_mobilenet_model.forward()
+    return process_detections(image, output)`,
+            faster_rcnn: `
+def faster_rcnn(image):
+    results = faster_rcnn_model(image)
+    return draw_results(image, results)`,
+            retinanet: `
+def retinanet(image):
+    results = retinanet_model(image)
+    return draw_results(image, results)`,
+            efficientdet: `
+def efficientdet(image):
+    results = efficientdet_model(image)
+    return draw_results(image, results)`,
+            yolor: `
+def yolor(image):
+    results = yolor_model(image)
+    return results.render()[0]`,
+            yolox: `
+def yolox(image):
+    results = yolox_model(image)
+    return draw_results(image, results)`,
+            detr: `
+def detr(image):
+    results = detr_model(image)
+    return draw_results(image, results)`,
+            centernet: `
+def centernet(image):
+    results = centernet_model(image)
+    return draw_results(image, results)`,
+            fcos: `
+def fcos(image):
+    results = fcos_model(image)
+    return draw_results(image, results)`,
+            segmentation: `
+def segmentation(image):
+    input_tensor = preprocess_image(image)
+    with torch.no_grad():
+        output = unet_model(input_tensor)['out'][0]
+    output_predictions = output.argmax(0).byte().cpu().numpy()
+    return (output_predictions > 0).astype(np.uint8) * 255`,
+            draw_boxes: `
+def draw_boxes(image, boxes):
+    for box in boxes:
+        cv2.rectangle(image, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+    return image`,
+            apply_mask: `
+def apply_mask(image, mask):
+    return cv2.bitwise_and(image, image, mask=mask)`
+        };
+
+        function log(message) {
+            console.log(message);
+            debugInfo.textContent += message + '\n';
+        }
+
+        function addOperation(operation) {
+            log(`Adding operation: ${operation}`);
+            let params = {};
+            if (operation === 'blur') {
+                params = {ksize: 5, sigmaX: 0};
+            } else if (operation === 'edge_detection') {
+                params = {threshold1: 100, threshold2: 200};
+            } else if (operation === 'threshold') {
+                params = {thresh: 127, maxval: 255, type: 0};
+            }
+            pipeline.push({operation, params});
+            updatePipelineView();
+            updateCodeDisplay();
+        }
+
+        function updatePipelineView() {
+            log('Updating pipeline view');
+            const pipelineElement = document.getElementById('pipeline');
+            pipelineElement.innerHTML = '';
+            pipeline.forEach((step, index) => {
+                const li = document.createElement('li');
+                li.textContent = `${index + 1}. ${step.operation}`;
+                const removeButton = document.createElement('button');
+                removeButton.textContent = 'Remove';
+                removeButton.onclick = () => removeOperation(index);
+                li.appendChild(removeButton);
+                pipelineElement.appendChild(li);
+            });
+        }
+
+        function updateCodeDisplay() {
+            let fullCode = 'import cv2\nimport numpy as np\nimport torch\n\n';
+            fullCode += 'def process_image(image):\n';
+            pipeline.forEach((step, index) => {
+                fullCode += `    # Step ${index + 1}: ${step.operation}\n`;
+                fullCode += `    image = ${step.operation}(image`;
+                if (Object.keys(step.params).length > 0) {
+                    fullCode += ', ' + Object.entries(step.params).map(([key, value]) => `${key}=${value}`).join(', ');
+                }
+                fullCode += ')\n';
+            });
+            fullCode += '    return image\n\n';
+            pipeline.forEach(step => {
+                fullCode += codeSnippets[step.operation] + '\n\n';
+            });
+            codeDisplay.textContent = fullCode;
+        }
+
+        function removeOperation(index) {
+            log(`Removing operation at index: ${index}`);
+            pipeline.splice(index, 1);
+            updatePipelineView();
+            updateCodeDisplay();
+        }
+
+        function processPipeline() {
+            log('Processing pipeline');
+            const input = document.getElementById('imageInput');
+            const file = input.files[0];
+            if (!file) {
+                log('No image selected');
+                alert('Please select an image first.');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                log('Image loaded, sending to server');
+                const img = document.getElementById('originalImage');
+                img.src = e.target.result;
+
+                log(`Sending pipeline to server: ${JSON.stringify(pipeline)}`);
+
+                fetch('/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: e.target.result, pipeline: pipeline }),
+                })
+                .then(response => {
+                    log(`Received response from server. Status: ${response.status}`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    if (data.error) {
+                        throw new Error(data.error);
+                    }
+                    log('Processing successful, updating image');
+                    const processedImg = document.getElementById('processedImage');
+                    processedImg.src = 'data:image/jpeg;base64,' + data.image;
+                })
+                .catch((error) => {
+                    log(`Error occurred: ${error.message}`);
+                    console.error('Error:', error);
+                    alert('An error occurred while processing the image: ' + error.message);
+                });
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function savePipeline() {
+            const name = prompt("Enter a name for this pipeline:");
+            if (name) {
+                log(`Saving pipeline: ${name}`);
+                fetch('/save_pipeline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, pipeline: pipeline }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    log(`Pipeline "${data.name}" saved successfully!`);
+                    alert(`Pipeline "${data.name}" saved successfully!`);
+                })
+                .catch((error) => {
+                    log(`Error saving pipeline: ${error.message}`);
+                    console.error('Error:', error);
+                    alert('An error occurred while saving the pipeline.');
+                });
+            }
+        }
+
+        function loadPipeline() {
+            log('Loading pipeline');
+            fetch('/load_pipeline')
+            .then(response => response.json())
+            .then(data => {
+                pipeline = data.pipeline;
+                updatePipelineView();
+                updateCodeDisplay();
+                log(`Pipeline "${data.name}" loaded successfully!`);
+                alert(`Pipeline "${data.name}" loaded successfully!`);
+            })
+            .catch((error) => {
+                log(`Error loading pipeline: ${error.message}`);
+                console.error('Error:', error);
+                alert('An error occurred while loading the pipeline.');
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', (event) => {
+            log('DOM fully loaded and parsed');
+            document.querySelectorAll('button').forEach(button => {
+                log(`Adding click listener to button: ${button.textContent}`);
+                button.addEventListener('click', () => log(`Button clicked: ${button.textContent}`));
+            });
+        });
+    </script>
+</body>
+</html>
