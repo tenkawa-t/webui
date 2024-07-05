@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Processing Pipeline</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; padding: 20px; }
+        .container { display: flex; flex-wrap: wrap; }
+        .image-container, .pipeline-container, .params-container { flex: 1 1 300px; margin-right: 20px; margin-bottom: 20px; }
+        .button-group { margin-bottom: 15px; border: 1px solid #ddd; padding: 10px; border-radius: 5px; }
+        .button-group h3 { margin-top: 0; }
+        button { margin: 5px; padding: 10px; }
+        img { max-width: 100%; height: auto; }
+        #pipeline { list-style-type: none; padding: 0; }
+        #pipeline li { margin-bottom: 10px; padding: 10px; background-color: #f4f4f4; }
+        #params-form { display: none; }
+        #codeDisplay {
+            background-color: #f4f4f4;
+            padding: 10px;
+            border: 1px solid #ddd;
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Image Processing Pipeline</h1>
+    <div class="container">
+        <div class="image-container">
+            <h2>Original Image</h2>
+            <input type="file" id="imageInput" accept="image/*">
+            <img id="originalImage" src="" alt="Original Image">
+            <h2>Processed Image</h2>
+            <img id="processedImage" src="" alt="Processed Image">
+        </div>
+        <div class="pipeline-container">
+            <h2>Processing Pipeline</h2>
+            <ul id="pipeline"></ul>
+            <div class="button-group">
+                <h3>Basic Operations</h3>
+                <button onclick="addOperation('grayscale')">Add Grayscale</button>
+                <button onclick="addOperation('blur')">Add Blur</button>
+                <button onclick="addOperation('edge_detection')">Add Edge Detection</button>
+                <button onclick="addOperation('threshold')">Add Threshold</button>
+            </div>
+            <div class="button-group">
+                <h3>Object Detection</h3>
+                <button onclick="addOperation('yolov5')">Add YOLOv5</button>
+                <button onclick="addOperation('yolox')">Add YOLOX</button>
+                <button onclick="addOperation('yolov8')">Add YOLOv8</button>
+                <button onclick="addOperation('line_detection')">Add Line Detection</button>
+                <button onclick="addOperation('circle_detection')">Add Circle Detection</button>
+
+            </div>
+            <div class="button-group">
+                <h3>Segmentation</h3>
+                <button onclick="addOperation('fastsam')">Add FastSAM</button>
+            </div>
+            <div class="button-group">
+                <h3>Classification</h3>
+                <button onclick="addOperation('resnet')">Add ResNet</button>
+            </div>
+            <div class="button-group">
+                <h3>Anomaly Detection</h3>
+                <button onclick="addOperation('autoencoder')">Add AutoEncoder</button>
+            </div>
+            <div class="button-group">
+                <h3>Pipeline Control</h3>
+                <button onclick="processPipeline()">Process Image</button>
+                <button onclick="savePipeline()">Save Pipeline</button>
+                <button onclick="loadPipeline()">Load Pipeline</button>
+            </div>
+        </div>
+        <div class="params-container">
+            <h2>Operation Parameters</h2>
+            <form id="params-form">
+                <!-- Parameters will be dynamically added here -->
+            </form>
+        </div>
+        <div class="code-container">
+            <h2>Processing Code</h2>
+            <pre id="codeDisplay"></pre>
+        </div>
+    </div>
+
+    <script>
+        let pipeline = [];
+
+        function addOperation(operation) {
+            let params = {};
+            switch(operation) {
+                case 'blur':
+                    params = {ksize: 5, sigmaX: 0};
+                    break;
+                case 'edge_detection':
+                    params = {threshold1: 100, threshold2: 200};
+                    break;
+                case 'threshold':
+                    params = {thresh: 127, maxval: 255, type: 0};
+                    break;
+                case 'line_detection':
+                    params = {
+                        canny_threshold1: 50, canny_threshold2: 150,
+                        rho: 1, theta: Math.PI/180, threshold: 100,
+                        min_line_length: 100, max_line_gap: 10
+                    };
+                    break;
+                case 'circle_detection':
+                    params = {
+                        dp: 1, minDist: 50, param1: 50, param2: 30,
+                        min_radius: 0, max_radius: 0
+                    };
+                    break;
+            }
+            pipeline.push({operation, params});
+            updatePipelineView();
+            showParams(pipeline.length - 1);
+        }
+
+        function updatePipelineView() {
+            const pipelineElement = document.getElementById('pipeline');
+            pipelineElement.innerHTML = '';
+            pipeline.forEach((step, index) => {
+                const li = document.createElement('li');
+                li.textContent = `${index + 1}. ${step.operation}`;
+                const removeButton = document.createElement('button');
+                removeButton.textContent = 'Remove';
+                removeButton.onclick = () => removeOperation(index);
+                li.appendChild(removeButton);
+                const editButton = document.createElement('button');
+                editButton.textContent = 'Edit';
+                editButton.onclick = () => showParams(index);
+                li.appendChild(editButton);
+                pipelineElement.appendChild(li);
+            });
+        }
+
+        function removeOperation(index) {
+            pipeline.splice(index, 1);
+            updatePipelineView();
+        }
+
+        function showParams(index) {
+            const form = document.getElementById('params-form');
+            form.innerHTML = '';
+            form.style.display = 'block';
+            const operation = pipeline[index].operation;
+            const params = pipeline[index].params;
+
+            for (const [key, value] of Object.entries(params)) {
+                const label = document.createElement('label');
+                label.textContent = key;
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.value = value;
+                input.onchange = (e) => {
+                    pipeline[index].params[key] = parseFloat(e.target.value);
+                };
+                form.appendChild(label);
+                form.appendChild(input);
+                form.appendChild(document.createElement('br'));
+            }
+        }
+
+        function processPipeline() {
+            const input = document.getElementById('imageInput');
+            const file = input.files[0];
+            if (!file) {
+                alert('Please select an image first.');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = document.getElementById('originalImage');
+                img.src = e.target.result;
+
+                fetch('/process', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image: e.target.result, pipeline: pipeline }),
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const processedImg = document.getElementById('processedImage');
+                    processedImg.src = 'data:image/jpeg;base64,' + data.image;
+                    
+                    // コードの表示
+                    const codeDisplay = document.getElementById('codeDisplay');
+                    if (data.code) {
+                        const formattedCode = formatCode(data.code);
+                        codeDisplay.innerHTML = formattedCode;
+                    } else {
+                        codeDisplay.textContent = 'No code available';
+                    }
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('An error occurred while processing the image: ' + error.message);
+                });
+            };
+
+            reader.onerror = function(error) {
+                console.error('Error reading file:', error);
+                alert('An error occurred while reading the image file.');
+            };
+
+            reader.readAsDataURL(file);
+        }
+
+        function formatCode(code) {
+            const steps = code.split('\n\n');
+            return steps.map(step => {
+                const [comment, ...codeLines] = step.split('\n');
+                return `<div class="code-step">
+                    <div class="code-step-comment">${comment}</div>
+                    <code>${codeLines.join('\n')}</code>
+                </div>`;
+            }).join('');
+        }
+        function savePipeline() {
+            const name = prompt("Enter a name for this pipeline:");
+            if (name) {
+                fetch('/save_pipeline', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name, pipeline: pipeline.map(step => ({operation: step.operation, params: step.params})) }),
+                })
+                .then(response => response.json())
+                .then(data => {
+                    alert(`Pipeline "${data.name}" saved successfully!`);
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('An error occurred while saving the pipeline.');
+                });
+            }
+        }
+
+        function loadPipeline() {
+            fetch('/load_pipeline')
+            .then(response => response.json())
+            .then(data => {
+                pipeline = data.pipeline;
+                updatePipelineView();
+                alert(`Pipeline "${data.name}" loaded successfully!`);
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                alert('An error occurred while loading the pipeline.');
+            });
+        }
+    </script>
+</body>
+</html>
