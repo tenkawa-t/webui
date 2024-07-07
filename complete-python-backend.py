@@ -1,7 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks, Body
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+import optuna
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import cv2
@@ -17,10 +18,17 @@ import io
 import os
 import traceback
 from ultralytics import YOLO, FastSAM
+import logging
+import asyncio
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+# 最適化の状態を追跡するためのグローバル変数
+optimization_results = {}
+optimization_in_progress = set()
 
 # モデル定義
 class AutoEncoder(nn.Module):
@@ -100,6 +108,10 @@ def apply_operation(image, operation, params):
         return resnet_classify(image)
     elif operation == 'autoencoder':
         return autoencoder_anomaly_detect(image)
+    elif operation == 'circle_detection':
+        return detect_circles(image, params)
+    elif operation == 'line_detection':
+        return detect_lines(image, params)
     else:
         raise ValueError(f"Unknown operation: {operation}")
 
@@ -152,6 +164,94 @@ def draw_anomaly_results(image, anomaly_score):
     # 異常検知の結果を描画するコードを実装
     return image
 
+def detect_circles(image, params):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.medianBlur(gray, 5)
+    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 
+                               dp=params.get('dp', 1),
+                               minDist=params.get('minDist', 50),
+                               param1=params.get('param1', 200),
+                               param2=params.get('param2', 100),
+                               minRadius=params.get('min_radius', 0),
+                               maxRadius=params.get('max_radius', 0))
+    
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for i in circles[0, :]:
+            center = (i[0], i[1])
+            # 円の中心
+            cv2.circle(image, center, 1, (0, 100, 100), 3)
+            # 円周
+            radius = i[2]
+            cv2.circle(image, center, radius, (255, 0, 255), 3)
+    
+    return image
+
+def detect_lines(image, params):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, params['canny_threshold1'], params['canny_threshold2'])
+    lines = cv2.HoughLinesP(edges, params['rho'], params['theta'], params['threshold'],
+                            minLineLength=params['minLineLength'], maxLineGap=params['maxLineGap'])
+    
+    if lines is not None:
+        for line in lines:
+            x1, y1, x2, y2 = line[0]
+            cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    
+    return image
+
+def optimize_parameters(operation, image):
+    def objective(trial):
+        params = {}
+        if operation == 'blur':
+            params['ksize'] = trial.suggest_int('ksize', 3, 15, step=2)
+            params['sigmaX'] = trial.suggest_float('sigmaX', 0, 10)
+        elif operation == 'edge_detection':
+            params['threshold1'] = trial.suggest_int('threshold1', 0, 255)
+            params['threshold2'] = trial.suggest_int('threshold2', 0, 255)
+        elif operation == 'threshold':
+            params['thresh'] = trial.suggest_int('thresh', 0, 255)
+            params['maxval'] = trial.suggest_int('maxval', 0, 255)
+            params['type'] = trial.suggest_categorical('type', [0, 1, 2, 3, 4])
+        elif operation == 'circle_detection':
+            params['dp'] = trial.suggest_float('dp', 1, 3)
+            params['minDist'] = trial.suggest_int('minDist', 10, 100)
+            params['param1'] = trial.suggest_int('param1', 50, 300)
+            params['param2'] = trial.suggest_int('param2', 50, 300)
+            params['min_radius'] = trial.suggest_int('min_radius', 0, 50)
+            params['max_radius'] = trial.suggest_int('max_radius', 50, 200)
+        elif operation == 'line_detection':
+            params['canny_threshold1'] = trial.suggest_int('canny_threshold1', 0, 255)
+            params['canny_threshold2'] = trial.suggest_int('canny_threshold2', 0, 255)
+            params['rho'] = trial.suggest_int('rho', 1, 10)
+            params['theta'] = trial.suggest_float('theta', 0, np.pi/2)
+            params['threshold'] = trial.suggest_int('threshold', 10, 200)
+            params['minLineLength'] = trial.suggest_int('minLineLength', 10, 200)
+            params['maxLineGap'] = trial.suggest_int('maxLineGap', 1, 50)
+        
+        processed_image = apply_operation(image.copy(), operation, params)
+        return evaluate_result(image, processed_image, operation)
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=10)  # 試行回数は調整可能
+
+    return study.best_params
+
+
+def evaluate_result(original_image, processed_image, operation):
+    if operation == 'blur':
+        return -cv2.Laplacian(processed_image, cv2.CV_64F).var()  # 鮮明度の逆数
+    elif operation == 'edge_detection':
+        return np.mean(processed_image)  # エッジの平均強度
+    elif operation == 'threshold':
+        return -np.std(processed_image)  # 標準偏差の逆数（コントラストの指標）
+    elif operation == 'circle_detection' or operation == 'line_detection':
+        # 検出された特徴の数を評価
+        gray = cv2.cvtColor(processed_image, cv2.COLOR_BGR2GRAY)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1, minDist=20, param1=50, param2=30, min_radius=0, max_radius=0)
+        return len(circles[0]) if circles is not None else 0
+    else:
+        return 0  # デフォルトの評価スコア
 # コードスニペット生成関数
 def get_code_snippet(index, operation, params):
     comment = f"# Step {index}: {operation.capitalize()}"
@@ -175,6 +275,28 @@ def get_code_snippet(index, operation, params):
         code = "output = resnet_model(torch.from_numpy(image).permute(2, 0, 1).float().div(255.0).unsqueeze(0))\nimage = draw_classification_results(image, F.softmax(output[0], dim=0))"
     elif operation == 'autoencoder':
         code = "reconstructed = autoencoder_model(torch.from_numpy(image).permute(2, 0, 1).float().div(255.0).unsqueeze(0))\nmse_loss = F.mse_loss(tensor, reconstructed, reduction='none').mean(dim=[1,2,3])\nimage = draw_anomaly_results(image, mse_loss.item())"
+    elif operation == 'circle_detection':
+        code = f"""gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                gray = cv2.medianBlur(gray, 5)
+                circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp={params['dp']}, minDist={params['minDist']},
+                                        param1={params['param1']}, param2={params['param2']},
+                                        minRadius={params['min_radius']}, maxRadius={params['max_radius']})
+                if circles is not None:
+                    circles = np.uint16(np.around(circles))
+                    for i in circles[0, :]:
+                        center = (i[0], i[1])
+                        cv2.circle(image, center, 1, (0, 100, 100), 3)
+                        radius = i[2]
+                        cv2.circle(image, center, radius, (255, 0, 255), 3)"""
+    elif operation == 'line_detection':
+        code = f"""gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                edges = cv2.Canny(gray, {params['canny_threshold1']}, {params['canny_threshold2']})
+                lines = cv2.HoughLinesP(edges, {params['rho']}, {params['theta']}, {params['threshold']},
+                                        minLineLength={params['minLineLength']}, maxLineGap={params['maxLineGap']})
+                if lines is not None:
+                    for line in lines:
+                        x1, y1, x2, y2 = line[0]
+                        cv2.line(image, (x1, y1), (x2, y2), (0, 255, 0), 2)"""
     else:
         code = f"# Unknown operation: {operation}"
     
@@ -217,15 +339,114 @@ async def process_image(request: dict):
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    error_message = f"An unexpected error occurred: {str(exc)}"
-    error_traceback = traceback.format_exc()
-    print(f"Error: {error_message}")
-    print(f"Traceback: {error_traceback}")
+    logger.error(f"Global exception handler caught: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"message": error_message, "traceback": error_traceback},
+        content={"detail": str(exc)},
     )
+
+@app.post("/optimize_parameters")
+async def optimize_parameters_endpoint(request: Request, background_tasks: BackgroundTasks, data: dict = Body(...)):
+    logger.info("Received request to /optimize_parameters")
+    try:
+        logger.info(f"Request data: {data.keys()}")  # データのキーのみをログに出力
+        print(f"Request data: {data.keys()}") 
+        image_data = data['image']
+        operation = data['operation']
+
+        if operation in optimization_in_progress:
+            logger.warning(f"Optimization already in progress for operation: {operation}")
+            print(f"Optimization already in progress for operation: {operation}")
+            return JSONResponse(content={'message': 'Optimization already in progress for this operation'})
+
+        image = decode_image(image_data)
+        print(f"Starting optimization for operation: {operation}")
+        logger.info(f"Starting optimization for operation: {operation}")
+        background_tasks.add_task(run_optimization, operation, image)
+        optimization_in_progress.add(operation)
+
+        return JSONResponse(content={'message': 'Optimization started'})
+    except Exception as e:
+        logger.error(f"Error in optimize_parameters_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+# グローバル変数に進捗情報を追加
+optimization_progress = {}
+
+async def run_optimization(operation, image):
+    global optimization_results, optimization_progress
+    try:
+        logger.info(f"Starting optimization for operation: {operation}")
+        optimization_progress[operation] = 0
+        
+        def progress_callback(study, trial):
+            progress = min(100, int((trial.number / 100) * 100))  # 100回の試行を想定
+            optimization_progress[operation] = progress
+        
+        best_params = optimize_parameters(operation, image, progress_callback)
+        optimization_results[operation] = best_params
+        logger.info(f"Optimization completed for operation: {operation}")
+    except Exception as e:
+        logger.error(f"Error during optimization for operation {operation}: {str(e)}", exc_info=True)
+    finally:
+        optimization_in_progress.discard(operation)
+    
+@app.get("/optimization_result/{operation}")
+async def get_optimization_result(operation: str):
+    if operation in optimization_results:
+        optimization_in_progress.discard(operation)
+        return JSONResponse(content={'status': 'completed', 'best_params': optimization_results[operation], 'progress': 100})
+    elif operation in optimization_in_progress:
+        progress = optimization_progress.get(operation, 0)
+        return JSONResponse(content={'status': 'in_progress', 'progress': progress})
+    else:
+        return JSONResponse(content={'status': 'not_started', 'progress': 0})
+
+
+@app.get("/routes")
+async def list_routes():
+    routes = [
+        {
+            "path": route.path,
+            "name": route.name,
+            "methods": [method for method in route.methods]
+        }
+        for route in app.routes
+    ]
+    return {"routes": routes}
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 本番環境では適切に制限してください
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+@app.post("/debug")
+async def debug_endpoint(request: Request):
+    data = await request.json()
+    print(f"Received data at /debug: {data}")
+    return {"status": "success"}
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Global exception handler caught: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+    )
+
+@app.get("/test")
+async def root():
+    return {"message": "Hello, World!"}
+
 
 if __name__ == '__main__':
     import uvicorn
-    uvicorn.run("opencvwebapply_uifix:app", host="127.0.0.1", port=8000, log_level="debug", reload=True)
+    print("Available routes:")
+    for route in app.routes:
+        print(f"{route.path} [{', '.join(route.methods)}]")
+    uvicorn.run("complete-python-backend:app", host="127.0.0.1", port=8000, log_level="debug", reload=True)
