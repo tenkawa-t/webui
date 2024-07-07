@@ -1,0 +1,128 @@
+はい、試行回数をUIから設定できるように修正しましょう。以下の変更を行います：
+
+1. HTMLに試行回数の入力フィールドを追加
+2. JavaScriptで試行回数を取得し、サーバーに送信
+3. サーバー側で試行回数を受け取り、最適化プロセスで使用
+
+HTMLの変更:
+```html
+<div class="params-container">
+    <h2>Operation Parameters</h2>
+    <div id="params-form"></div>
+    <label for="n-trials">Number of trials:</label>
+    <input type="number" id="n-trials" value="100" min="1" max="1000">
+    <button class="optimize-button" onclick="optimizeParameters()">Optimize Parameters</button>
+    <div id="optimization-progress" style="display: none;">
+        <h3>Optimization Progress</h3>
+        <progress id="progress-bar" value="0" max="100"></progress>
+        <span id="progress-percentage">0%</span>
+    </div>
+</div>
+```
+
+JavaScriptの変更:
+```javascript
+function optimizeParameters() {
+    console.log("optimizeParameters function called");
+    const currentOperation = pipeline[pipeline.length - 1].operation;
+    console.log("Current operation:", currentOperation);
+    const input = document.getElementById('imageInput');
+    const file = input.files[0];
+    if (!file) {
+        console.error("No file selected");
+        alert('Please select an image first.');
+        return;
+    }
+
+    const nTrials = parseInt(document.getElementById('n-trials').value, 10);
+    if (isNaN(nTrials) || nTrials < 1 || nTrials > 1000) {
+        alert('Please enter a valid number of trials (1-1000).');
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        console.log("File read successfully");
+        console.log("Request data:", { image: e.target.result, operation: currentOperation, n_trials: nTrials });
+
+        fetch('/optimize_parameters', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                image: e.target.result, 
+                operation: currentOperation,
+                n_trials: nTrials
+            }),
+        })
+        .then(response => {
+            console.log("Received response:", response);
+            if (!response.ok) {
+                return response.text().then(text => {
+                    throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
+                });
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Optimization started:', data);
+            alert('Optimization started. This may take a while.');
+            updateProgressBar(0);
+            checkOptimizationStatus(currentOperation);
+        })
+        .catch((error) => {
+            console.error('Error:', error);
+            alert('An error occurred while starting optimization: ' + error.message);
+        });
+    };
+    reader.readAsDataURL(file);
+}
+```
+
+サーバー側（Python）の変更:
+```python
+@app.post("/optimize_parameters")
+async def optimize_parameters_endpoint(request: Request, background_tasks: BackgroundTasks, data: dict = Body(...)):
+    try:
+        image_data = data['image']
+        operation = data['operation']
+        n_trials = data.get('n_trials', 100)  # デフォルト値を100に設定
+
+        if operation in optimization_in_progress:
+            return JSONResponse(content={'message': 'Optimization already in progress for this operation'})
+
+        image = decode_image(image_data)
+        background_tasks.add_task(run_optimization, operation, image, n_trials)
+        optimization_in_progress.add(operation)
+
+        return JSONResponse(content={'message': 'Optimization started'})
+    except Exception as e:
+        logger.error(f"Error in optimize_parameters_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def run_optimization(operation, image, n_trials):
+    global optimization_results, optimization_progress
+    try:
+        logger.info(f"Starting optimization for operation: {operation}")
+        optimization_progress[operation] = 0
+        
+        def progress_callback(study, trial):
+            progress = min(100, int((trial.number / n_trials) * 100))
+            optimization_progress[operation] = progress
+        
+        best_params = optimize_parameters(operation, image, n_trials, progress_callback)
+        optimization_results[operation] = best_params
+        logger.info(f"Optimization completed for operation: {operation}")
+    except Exception as e:
+        logger.error(f"Error during optimization for operation {operation}: {str(e)}", exc_info=True)
+    finally:
+        optimization_in_progress.discard(operation)
+
+def optimize_parameters(operation, image, n_trials, progress_callback=None):
+    # この関数の内容は以前のものと同じです
+    # ただし、study.optimize の呼び出しを以下のように変更します：
+    study.optimize(objective, n_trials=n_trials, callbacks=[progress_callback] if progress_callback else None)
+```
+
+これらの変更により、ユーザーはUIから試行回数を設定できるようになります。デフォルトでは100回に設定されていますが、1から1000の間で任意の値を入力できます。この値は最適化リクエストと共にサーバーに送信され、サーバー側で使用されます。
+
+また、進捗バーの更新ロジックも、設定された試行回数に基づいて正確に計算されるようになります。これにより、ユーザーはより柔軟に最適化プロセスを制御でき、同時に進捗状況を正確に把握できるようになります。
