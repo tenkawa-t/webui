@@ -126,3 +126,108 @@ def optimize_parameters(operation, image, n_trials, progress_callback=None):
 これらの変更により、ユーザーはUIから試行回数を設定できるようになります。デフォルトでは100回に設定されていますが、1から1000の間で任意の値を入力できます。この値は最適化リクエストと共にサーバーに送信され、サーバー側で使用されます。
 
 また、進捗バーの更新ロジックも、設定された試行回数に基づいて正確に計算されるようになります。これにより、ユーザーはより柔軟に最適化プロセスを制御でき、同時に進捗状況を正確に把握できるようになります。
+
+
+
+
+
+
+
+
+
+
+image hashがクリックのたびに変わってしまう原因として、以下の点が考えられます：
+
+画像データの変更:
+フロントエンドから送信される画像データが毎回少しずつ変わっている可能性があります。Base64エンコードされた画像データが完全に同一であることを確認してください。
+前処理の影響:
+get_nearest_object 関数内で preprocess_image 関数を呼び出していますが、この前処理によって画像データが変更される可能性があります。
+画像形式の一貫性:
+画像がRGB形式かBGR形式か、あるいはアルファチャンネルを含むかどうかが一貫していない可能性があります。
+浮動小数点の精度の問題:
+画像データに浮動小数点の値が含まれている場合、微小な数値の違いがハッシュの変化を引き起こす可能性があります。
+
+これらの問題を解決するために、以下の修正を試してみてください：
+
+画像の正規化:
+get_nearest_object 関数の冒頭で、画像を正規化する処理を追加します。
+
+pythonCopydef get_nearest_object(image, x, y, max_distance=50):
+    try:
+        logger.info(f"Processing request for coordinates ({x}, {y})")
+        
+        # 画像を正規化
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGRからRGBに変換
+        image = (image * 255).astype(np.uint8)  # 0-255の整数値に正規化
+        
+        # ハッシュを計算
+        image_hash = hashlib.md5(image.tobytes()).hexdigest()
+        logger.info(f"Image hash: {image_hash}")
+        
+        # 以降の処理は変更なし
+        ...
+
+前処理の移動:
+preprocess_image 関数の呼び出しを、ハッシュ計算の後に移動します。
+
+pythonCopydef get_nearest_object(image, x, y, max_distance=50):
+    try:
+        # ... (前述の正規化処理)
+        
+        # キャッシュをチェック
+        cached_result = get_cached_result(image_hash)
+        if cached_result is not None:
+            logger.info("Using cached FastSAM result")
+            masks_np = cached_result
+        else:
+            logger.info("Processing new image with FastSAM")
+            # ここで前処理を行う
+            preprocessed_image = preprocess_image(image)
+            
+            # FastSAMの処理
+            model = get_fastsam_model()
+            results = model(preprocessed_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+            # ... (以降の処理)
+
+デバッグ情報の追加:
+画像データの一貫性を確認するために、より詳細なデバッグ情報を出力します。
+
+pythonCopydef get_nearest_object(image, x, y, max_distance=50):
+    try:
+        logger.info(f"Image shape: {image.shape}, dtype: {image.dtype}")
+        logger.info(f"Image min: {np.min(image)}, max: {np.max(image)}")
+        
+        # ... (前述の処理)
+
+フロントエンド側の修正:
+JavaScript側で、画像データを送信する前に一貫性を確保します。
+
+javascriptCopyfunction getDetectedClickObject(x, y) {
+    const detectedClickObject = document.getElementById('detectedClickObject');
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    canvas.width = detectedClickObject.naturalWidth;
+    canvas.height = detectedClickObject.naturalHeight;
+    ctx.drawImage(detectedClickObject, 0, 0);
+    const imageData = canvas.toDataURL('image/jpeg', 1.0);  // 品質を1.0に設定
+
+    fetch('/get_nearest_object', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+            image: imageData,
+            x: x,
+            y: y
+        }),
+    })
+    // ... (以降の処理)
+}
+これらの修正を適用することで、image hashの一貫性が向上し、キャッシュが正しく機能するはずです。それでも問題が解決しない場合は、さらに詳細なログ出力を追加して、どの段階で画像データが変化しているかを特定する必要があります。
+
+
+
+
+
+
+
+
