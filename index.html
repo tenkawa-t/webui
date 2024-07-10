@@ -44,6 +44,10 @@
             <img id="originalImage" src="" alt="Original Image">
             <h2>Processed Image</h2>
             <img id="processedImage" src="" alt="Processed Image">
+            <!-- <img id="processedImage" src="" alt="Processed Image" onclick="getCoordinates(event)"> -->
+            <h2>Detected Click Object</h2>
+            <img id="detectedClickObject" src="" alt="Detected Click Object" onclick="getCoordinates(event)" style="display: none;">
+            <button onclick="clearSelectedRegions()" style="display: none;" id="clearRegionsButton">Clear Selected Regions</button>
         </div>
         <div class="pipeline-container">
             <h2>Processing Pipeline</h2>
@@ -85,6 +89,8 @@
         <div class="params-container">
             <h2>Operation Parameters</h2>
             <div id="params-form"></div>
+            <label for="n-trials">Number of trials:</label>
+            <input type="number" id="n-trials" value="10" min="1" max="100">
             <button class="optimize-button" onclick="optimizeParameters()">Optimize Parameters</button>
             <div id="optimization-progress" style="display: none;">
                 <h3>Optimization Progress</h3>
@@ -214,9 +220,17 @@
                     const processedImg = document.getElementById('processedImage');
                     processedImg.src = 'data:image/jpeg;base64,' + data.image;
                     
+                    const detectedClickObject = document.getElementById('detectedClickObject');
+                    detectedClickObject.src = processedImg.src;  // 初期状態ではprocessedImageと同じ画像を設定
+                    detectedClickObject.style.display = 'block';
+                    detectedClickObject.onclick = getCoordinates;
+                    
+                    const clearRegionsButton = document.getElementById('clearRegionsButton');
+                    clearRegionsButton.style.display = 'block';
+                    
                     const codeDisplay = document.getElementById('codeDisplay');
                     if (data.code) {
-                        codeDisplay.textContent = data.code;
+                        codeDisplay.textContent = data.code
                     } else {
                         codeDisplay.textContent = 'No code available';
                     }
@@ -226,12 +240,6 @@
                     alert('An error occurred while processing the image: ' + error.message);
                 });
             };
-
-            reader.onerror = function(error) {
-                console.error('Error reading file:', error);
-                alert('An error occurred while reading the image file.');
-            };
-
             reader.readAsDataURL(file);
         }
 
@@ -313,23 +321,33 @@
             console.log("Current operation:", currentOperation);
             const input = document.getElementById('imageInput');
             const file = input.files[0];
-            updateProgressBar(0);  // 最適化開始時に進捗バーを表示
             if (!file) {
                 console.error("No file selected");
                 alert('Please select an image first.');
                 return;
             }
 
+            const nTrials = parseInt(document.getElementById('n-trials').value, 10);
+            if (isNaN(nTrials) || nTrials < 1 || nTrials > 100) {
+                alert('Please enter a valid number of trials (1-100).');
+                return;
+            }
+
+            updateProgressBar(0);  // 最適化開始時に進捗バーを表示
+
             const reader = new FileReader();
             reader.onload = function(e) {
                 console.log("File read successfully");
-                console.log("Request data:", { image: e.target.result, operation: currentOperation });
+                console.log("Request data:", { image: e.target.result, operation: currentOperation, n_trials: nTrials });
 
-                // 元の /optimize_parameters エンドポイントを呼び出す
                 fetch('/optimize_parameters', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ image: e.target.result, operation: currentOperation }),
+                    body: JSON.stringify({ 
+                        image: e.target.result, 
+                        operation: currentOperation,
+                        n_trials: nTrials
+                    }),
                 })
                 .then(response => {
                     console.log("Received response:", response);
@@ -348,6 +366,7 @@
                 .catch((error) => {
                     console.error('Error:', error);
                     alert('An error occurred while starting optimization: ' + error.message);
+                    hideProgressBar();
                 });
             };
             reader.readAsDataURL(file);
@@ -365,19 +384,24 @@
             })
             .then(data => {
                 console.log('Optimization status:', data);
+                console.log('Progress:', data.progress);  // 進捗状況をログ出力
+                updateProgressBar(data.progress);
                 if (data.status === 'completed') {
                     updateParamsWithOptimizedValues(data.best_params);
+                    hideProgressBar();
                 } else if (data.status === 'in_progress') {
-                    console.log('Optimization still in progress, checking again in 5 seconds');
-                    setTimeout(() => checkOptimizationStatus(operation), 5000);
+                    console.log('Optimization still in progress, checking again in 1 second');
+                    setTimeout(() => checkOptimizationStatus(operation), 1000);  // 更新間隔を1秒に短縮
                 } else {
                     console.log('Unexpected optimization status:', data.status);
                     alert('Optimization has not started or encountered an error.');
+                    hideProgressBar();
                 }
             })
             .catch((error) => {
                 console.error('Error:', error);
                 alert('An error occurred while checking optimization status: ' + error.message);
+                hideProgressBar();
             });
         }
 
@@ -430,6 +454,77 @@
             pipeline[pipeline.length - 1].params = bestParams;
             showParams(pipeline.length - 1);
             alert('Optimization completed. Parameters have been updated.');
+        }
+
+        function getCoordinates(event) {
+            const image = event.target;
+            const rect = image.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            // 画像の実際のサイズとDOM上のサイズの比率を計算
+            const scaleX = image.naturalWidth / rect.width;
+            const scaleY = image.naturalHeight / rect.height;
+            
+            // スケールを適用して実際の座標を計算
+            const actualX = Math.round(x * scaleX);
+            const actualY = Math.round(y * scaleY);
+            
+            getDetectedClickObject(actualX, actualY);  // getNearestObjectをgetDetectedClickObjectに変更
+        }
+
+        function getDetectedClickObject(x, y) {
+            const detectedClickObject = document.getElementById('detectedClickObject');
+            
+            fetch('/get_nearest_object', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    image: detectedClickObject.src,
+                    x: x,
+                    y: y
+                }),
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (data.image) {
+                    detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+                    detectedClickObject.style.display = 'block';
+                } else {
+                    alert(data.message || 'No object found near the specified coordinates.');
+                }
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                alert('An error occurred while getting the detected click object: ' + error.message);
+            });
+        }
+
+        function clearSelectedRegions() {
+            fetch('/clear_selected_regions', {
+                method: 'POST',
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                alert(data.message);
+                // Clear the nearest object image
+                const nearestObjectImage = document.getElementById('nearestObjectImage');
+                nearestObjectImage.src = '';
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+                alert('An error occurred while clearing selected regions: ' + error.message);
+            });
         }
             </script>
 </body>

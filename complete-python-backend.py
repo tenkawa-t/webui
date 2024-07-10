@@ -18,10 +18,22 @@ import io
 import os
 import traceback
 from ultralytics import YOLO, FastSAM
+from ultralytics.models.fastsam import FastSAMPrompt
 import logging
 import asyncio
+import numpy as np
+from sklearn.metrics import jaccard_score
+import hashlib
+from functools import lru_cache
+
+# グローバル変数としてFastSAMモデルを保持
+global_fastsam_model = None
+
+fastsam_result = None
+
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
 
 app = FastAPI()
 
@@ -108,8 +120,33 @@ def apply_operation(image, operation, params):
         return resnet_classify(image)
     elif operation == 'autoencoder':
         return autoencoder_anomaly_detect(image)
+    # elif operation == 'circle_detection':
+    #     return detect_circles(image, params)
     elif operation == 'circle_detection':
-        return detect_circles(image, params)
+                # 画像がグレースケールかカラーかを確認
+        if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
+            gray = image
+        else:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.medianBlur(gray, 5)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 
+                                   dp=params['dp'],
+                                   minDist=params['minDist'],
+                                   param1=params['param1'],
+                                   param2=params['param2'],
+                                   minRadius=params['min_radius'],
+                                   maxRadius=params['max_radius'])
+        
+        result_image = image.copy()
+        if circles is not None:
+            circles = np.uint16(np.around(circles))
+            for i in circles[0, :]:
+                center = (i[0], i[1])
+                cv2.circle(result_image, center, 1, (0, 100, 100), 3)
+                radius = i[2]
+                cv2.circle(result_image, center, radius, (255, 0, 255), 3)
+        
+        return result_image
     elif operation == 'line_detection':
         return detect_lines(image, params)
     else:
@@ -200,7 +237,51 @@ def detect_lines(image, params):
     
     return image
 
-def optimize_parameters(operation, image):
+def get_fastsam_result(image):
+    global fastsam_result
+    if fastsam_result is None:
+        try:
+            print(f"Input image shape: {image.shape}")
+            model = load_fastsam_model()
+            results = model(image, device='cpu')
+            mask = results[0].masks.data.cpu().numpy().squeeze()
+            print(f"FastSAM mask shape: {mask.shape}")
+            
+            if image.shape[0] > 0 and image.shape[1] > 0:
+                # マスクが3次元の場合、最初の次元を取り除く
+                if mask.ndim == 3:
+                    mask = mask[0]
+                
+                # マスクのサイズが画像と異なる場合、リサイズする
+                if mask.shape != (image.shape[0], image.shape[1]):
+                    fastsam_result = cv2.resize((mask > 0).astype(np.uint8), 
+                                                (image.shape[1], image.shape[0]), 
+                                                interpolation=cv2.INTER_NEAREST)
+                else:
+                    fastsam_result = (mask > 0).astype(np.uint8)
+                
+                print(f"Resized FastSAM mask shape: {fastsam_result.shape}")
+            else:
+                print(f"Invalid image shape: {image.shape}")
+                fastsam_result = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+        except Exception as e:
+            print(f"Error in get_fastsam_result_for_optimization: {str(e)}")
+            fastsam_result = np.zeros((image.shape[0], image.shape[1]), dtype=np.uint8)
+    
+    return fastsam_result
+
+
+def circle_detection_to_mask(image, circles):
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for i in circles[0, :]:
+            cv2.circle(mask, (i[0], i[1]), i[2], 1, -1)
+    return mask
+
+
+
+def optimize_parameters(operation, image, n_trials, progress_callback=None):
     def objective(trial):
         params = {}
         if operation == 'blur':
@@ -214,12 +295,17 @@ def optimize_parameters(operation, image):
             params['maxval'] = trial.suggest_int('maxval', 0, 255)
             params['type'] = trial.suggest_categorical('type', [0, 1, 2, 3, 4])
         elif operation == 'circle_detection':
+            global fastsam_result
+            fastsam_result = None  # FastSAM の結果をリセット
+            
+            fastsam_mask = get_fastsam_result(image)
             params['dp'] = trial.suggest_float('dp', 1, 3)
             params['minDist'] = trial.suggest_int('minDist', 10, 100)
             params['param1'] = trial.suggest_int('param1', 50, 300)
             params['param2'] = trial.suggest_int('param2', 50, 300)
             params['min_radius'] = trial.suggest_int('min_radius', 0, 50)
             params['max_radius'] = trial.suggest_int('max_radius', 50, 200)
+            return evaluate_circle_detection(image, params, fastsam_mask)
         elif operation == 'line_detection':
             params['canny_threshold1'] = trial.suggest_int('canny_threshold1', 0, 255)
             params['canny_threshold2'] = trial.suggest_int('canny_threshold2', 0, 255)
@@ -231,12 +317,34 @@ def optimize_parameters(operation, image):
         
         processed_image = apply_operation(image.copy(), operation, params)
         return evaluate_result(image, processed_image, operation)
-
+    
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=10)  # 試行回数は調整可能
-
+    study.optimize(objective, n_trials=n_trials, callbacks=[progress_callback] if progress_callback else None)
     return study.best_params
 
+def evaluate_circle_detection(image, params, fastsam_mask):
+    try:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray = cv2.medianBlur(gray, 5)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 
+                                   dp=params['dp'],
+                                   minDist=params['minDist'],
+                                   param1=params['param1'],
+                                   param2=params['param2'],
+                                   minRadius=params['min_radius'],
+                                   maxRadius=params['max_radius'])
+        
+        circle_mask = circle_detection_to_mask(image, circles)
+        
+        if fastsam_mask.shape != circle_mask.shape:
+            print(f"Shape mismatch: fastsam_mask {fastsam_mask.shape}, circle_mask {circle_mask.shape}")
+            fastsam_mask = cv2.resize(fastsam_mask, (circle_mask.shape[1], circle_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
+        
+        iou = jaccard_score(fastsam_mask.flatten(), circle_mask.flatten())
+        return iou
+    except Exception as e:
+        print(f"Error in evaluate_circle_detection: {str(e)}")
+        return 0  # エラーが発生した場合は最低スコアを返す
 
 def evaluate_result(original_image, processed_image, operation):
     if operation == 'blur':
@@ -252,6 +360,7 @@ def evaluate_result(original_image, processed_image, operation):
         return len(circles[0]) if circles is not None else 0
     else:
         return 0  # デフォルトの評価スコア
+
 # コードスニペット生成関数
 def get_code_snippet(index, operation, params):
     comment = f"# Step {index}: {operation.capitalize()}"
@@ -302,6 +411,253 @@ def get_code_snippet(index, operation, params):
     
     return f"{comment}\n{code}"
 
+def get_nearest_object(image, x, y, max_distance=50):
+    try:
+        logger.info(f"Processing request for coordinates ({x}, {y})")
+        # 画像を正規化
+        hashimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGRからRGBに変換
+        hashimage = (hashimage * 255).astype(np.uint8)  # 0-255の整数値に正規化
+
+        # Calculate image hash for caching
+        image_hash = hashlib.md5(hashimage.tobytes()).hexdigest()
+        logger.info(f"Image hash: {image_hash}")  # Add
+        
+        # Check cache
+        cached_result = get_cached_result(image_hash)
+        if cached_result is not None:
+            logger.info("Using cached FastSAM result")
+            masks_np = cached_result
+        else:
+            logger.info("Processing new image with FastSAM")
+            # Preprocess the image
+            pre_image = preprocess_image(image)
+        
+            model = get_fastsam_model()
+            results = model(pre_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+            
+            logger.info("Creating FastSAM prompt")
+            prompt_process = FastSAMPrompt(pre_image, results, device='cpu')
+            
+            logger.info("Getting all objects")
+            ann = prompt_process.everything_prompt()
+            
+            logger.info(f"Type of ann: {type(ann)}")
+            
+            if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
+                masks = ann[0].masks
+                logger.info(f"Type of masks: {type(masks)}")
+                
+                # Convert Masks object to numpy array
+                if hasattr(masks, 'data'):
+                    masks_np = masks.data.cpu().numpy()
+                elif hasattr(masks, 'numpy'):
+                    masks_np = masks.numpy()
+                else:
+                    logger.error(f"Unexpected type for masks: {type(masks)}")
+                    return None
+                
+                # Cache the result
+                set_cached_result(image_hash, masks_np)
+            else:
+                logger.error(f"Unexpected structure for ann: {type(ann)}")
+                return None
+        
+        logger.info(f"Shape of masks_np: {masks_np.shape}")
+        
+        nearest_object = None
+        min_distance = float('inf')
+        
+        for i in range(masks_np.shape[0]):
+            mask = masks_np[i]
+            logger.info(f"Processing mask {i}, shape: {mask.shape}")
+            
+            if mask.ndim > 2:
+                mask = mask.squeeze()
+            
+            if mask.ndim != 2:
+                logger.warning(f"Skipping mask with unexpected shape: {mask.shape}")
+                continue
+            
+            where_result = np.where(mask)
+            if len(where_result) != 2:
+                logger.warning(f"Unexpected where result shape: {len(where_result)}")
+                continue
+            
+            coords = np.column_stack(where_result)
+            distances = np.sqrt(np.sum((coords - np.array([y, x]))**2, axis=1))
+            min_dist = np.min(distances) if distances.size > 0 else float('inf')
+            
+            if min_dist < min_distance and min_dist <= max_distance:
+                min_distance = min_dist
+                nearest_object = mask
+        
+        if nearest_object is not None:
+            logger.info("Nearest object found")
+            # オブジェクトの中心を計算
+            center = np.mean(np.argwhere(nearest_object), axis=0)
+            center = (int(center[1]), int(center[0]))  # (x, y) 形式に変換
+            # SelectedRegion オブジェクトとして保存
+            selected_regions.append(SelectedRegion(nearest_object, center))
+            
+            logger.info("Applying mask to image")
+            masked_image = cv2.bitwise_and(image, image, mask=nearest_object.astype(np.uint8))
+            return masked_image
+        else:
+            logger.info("No object found near the specified coordinates")
+            return None
+    except Exception as e:
+        logger.error(f"Error in get_nearest_object: {str(e)}", exc_info=True)
+        raise
+
+def draw_selected_regions(image):
+    result_image = image.copy()
+    for i, region in enumerate(selected_regions):
+        mask = region.mask.astype(np.uint8)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(result_image, contours, -1, (0, 255, 0), 2)
+        cv2.putText(result_image, f"Region {i+1}", region.center, cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    return result_image
+
+class SelectedRegion:
+    def __init__(self, mask, center):
+        self.mask = mask
+        self.center = center
+
+selected_regions = []
+
+def add_selected_region(mask, center):
+    selected_regions.append(SelectedRegion(mask, center))
+
+def get_selected_regions():
+    return selected_regions
+
+@app.post("/clear_selected_regions")
+async def clear_selected_regions_endpoint():
+    global selected_regions
+    selected_regions = []
+    return JSONResponse(content={'message': 'All selected regions have been cleared.'})
+
+@app.post("/get_nearest_object")
+async def get_nearest_object_endpoint(data: dict):
+    try:
+        image_data = data['image']
+        x = data['x']
+        y = data['y']
+        
+        image = decode_image(image_data)
+        logger.info(f"Image shape: {image.shape}, Coordinates: ({x}, {y})")
+        
+        result = get_nearest_object(image, x, y)
+        
+        if result is not None:
+            # 選択された領域を含む画像を作成
+            result_with_regions = draw_selected_regions(image)
+            result_image = encode_image(result_with_regions)
+            return JSONResponse(content={'image': result_image})
+        else:
+            return JSONResponse(content={'message': 'No object found near the specified coordinates.'})
+    except Exception as e:
+        logger.error(f"Error in get_nearest_object_endpoint: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+def apply_optimized_circle_detection(image, params):
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, 
+                               dp=params['dp'],
+                               minDist=params['minDist'],
+                               param1=params['param1'],
+                               param2=params['param2'],
+                               minRadius=params['minRadius'],
+                               maxRadius=params['maxRadius'])
+    
+    result_image = image.copy()
+    if circles is not None:
+        circles = np.uint16(np.around(circles))
+        for i in circles[0, :]:
+            center = (i[0], i[1])
+            cv2.circle(result_image, center, 1, (0, 100, 100), 3)
+            radius = i[2]
+            cv2.circle(result_image, center, radius, (255, 0, 255), 3)
+    
+    return result_image
+
+@app.post("/optimize_and_detect_circles")
+async def optimize_and_detect_circles(data: dict):
+    try:
+        image_data = data['image']
+        image = decode_image(image_data)
+        
+        if not selected_regions:
+            return JSONResponse(content={'error': 'No regions selected. Please select regions first.'})
+        
+        best_params = optimize_circle_detection(image, selected_regions)
+        result_image = apply_optimized_circle_detection(image, best_params)
+        
+        result_image_encoded = encode_image(result_image)
+        return JSONResponse(content={'image': result_image_encoded, 'params': best_params})
+    except Exception as e:
+        logger.error(f"Error in optimize_and_detect_circles: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def optimize_circle_detection(image, selected_regions, n_trials=100):
+    global fastsam_result
+    fastsam_result = None  # FastSAM の結果をリセット
+    
+    fastsam_mask = get_fastsam_result(image)
+    def objective(trial):
+        dp = trial.suggest_float('dp', 1.0, 3.0)
+        minDist = trial.suggest_int('minDist', 20, 100)
+        param1 = trial.suggest_int('param1', 50, 300)
+        param2 = trial.suggest_int('param2', 10, 100)
+        minRadius = trial.suggest_int('minRadius', 0, 50)
+        maxRadius = trial.suggest_int('maxRadius', 50, 200)
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp, minDist,
+                                   param1=param1, param2=param2,
+                                   minRadius=minRadius, maxRadius=maxRadius)
+        
+        if circles is None:
+            return 0
+
+        score = 0
+        for region in selected_regions:
+            region_mask = region.mask
+            for circle in circles[0]:
+                x, y, r = circle
+                circle_mask = np.zeros_like(region_mask)
+                cv2.circle(circle_mask, (int(x), int(y)), int(r), 1, -1)
+                
+                intersection = np.logical_and(region_mask, circle_mask)
+                union = np.logical_or(region_mask, circle_mask)
+                iou = np.sum(intersection) / np.sum(union)
+                score += iou
+
+        return score / len(selected_regions)
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials)
+
+    best_params = study.best_params
+    return best_params
+
+@app.post("/show_selected_regions")
+async def show_selected_regions(data: dict):
+    try:
+        image_data = data['image']
+        image = decode_image(image_data)
+        
+        if not selected_regions:
+            return JSONResponse(content={'error': 'No regions selected. Please select regions first.'})
+        
+        result_image = draw_selected_regions(image, selected_regions)
+        result_image_encoded = encode_image(result_image)
+        return JSONResponse(content={'image': result_image_encoded})
+    except Exception as e:
+        logger.error(f"Error in show_selected_regions: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # FastAPI ルート
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
@@ -349,10 +705,11 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def optimize_parameters_endpoint(request: Request, background_tasks: BackgroundTasks, data: dict = Body(...)):
     logger.info("Received request to /optimize_parameters")
     try:
-        logger.info(f"Request data: {data.keys()}")  # データのキーのみをログに出力
+        logger.info(f"Request data: {data.keys()}")
         print(f"Request data: {data.keys()}") 
         image_data = data['image']
         operation = data['operation']
+        n_trials = data.get('n_trials', 10)  # デフォルト値を10に設定
 
         if operation in optimization_in_progress:
             logger.warning(f"Optimization already in progress for operation: {operation}")
@@ -362,48 +719,125 @@ async def optimize_parameters_endpoint(request: Request, background_tasks: Backg
         image = decode_image(image_data)
         print(f"Starting optimization for operation: {operation}")
         logger.info(f"Starting optimization for operation: {operation}")
-        background_tasks.add_task(run_optimization, operation, image)
+        background_tasks.add_task(run_optimization, operation, image, n_trials)
         optimization_in_progress.add(operation)
 
         return JSONResponse(content={'message': 'Optimization started'})
     except Exception as e:
         logger.error(f"Error in optimize_parameters_endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-    
 
 # グローバル変数に進捗情報を追加
 optimization_progress = {}
-
-async def run_optimization(operation, image):
+async def run_optimization(operation, image, n_trials):
     global optimization_results, optimization_progress
     try:
         logger.info(f"Starting optimization for operation: {operation}")
         optimization_progress[operation] = 0
         
-        def progress_callback(study, trial):
-            progress = min(100, int((trial.number / 100) * 100))  # 100回の試行を想定
-            optimization_progress[operation] = progress
+        def objective(trial):
+            params = {}
+            if operation == 'blur':
+                params['ksize'] = trial.suggest_int('ksize', 3, 15, step=2)
+                params['sigmaX'] = trial.suggest_float('sigmaX', 0, 10)
+            elif operation == 'edge_detection':
+                params['threshold1'] = trial.suggest_int('threshold1', 0, 255)
+                params['threshold2'] = trial.suggest_int('threshold2', 0, 255)
+            elif operation == 'threshold':
+                params['thresh'] = trial.suggest_int('thresh', 0, 255)
+                params['maxval'] = trial.suggest_int('maxval', 0, 255)
+                params['type'] = trial.suggest_categorical('type', [0, 1, 2, 3, 4])
+            elif operation == 'circle_detection':
+                global fastsam_result
+                fastsam_result = None  # FastSAM の結果をリセット
+                
+                fastsam_mask = get_fastsam_result(image)
+                params['dp'] = trial.suggest_float('dp', 1, 3)
+                params['minDist'] = trial.suggest_int('minDist', 10, 100)
+                params['param1'] = trial.suggest_int('param1', 50, 300)
+                params['param2'] = trial.suggest_int('param2', 50, 300)
+                params['min_radius'] = trial.suggest_int('min_radius', 0, 50)
+                params['max_radius'] = trial.suggest_int('max_radius', 50, 200)
+                return evaluate_circle_detection(image, params, fastsam_mask)
+            elif operation == 'line_detection':
+                params['canny_threshold1'] = trial.suggest_int('canny_threshold1', 0, 255)
+                params['canny_threshold2'] = trial.suggest_int('canny_threshold2', 0, 255)
+                params['rho'] = trial.suggest_int('rho', 1, 10)
+                params['theta'] = trial.suggest_float('theta', 0, np.pi/2)
+                params['threshold'] = trial.suggest_int('threshold', 10, 200)
+                params['minLineLength'] = trial.suggest_int('minLineLength', 10, 200)
+                params['maxLineGap'] = trial.suggest_int('maxLineGap', 1, 50)
+            
+            processed_image = apply_operation(image.copy(), operation, params)
+            return evaluate_result(image, processed_image, operation)
         
-        best_params = optimize_parameters(operation, image, progress_callback)
+        study = optuna.create_study(direction='maximize')
+        study.optimize(objective, n_trials=n_trials)
+        
+        best_params = study.best_params
         optimization_results[operation] = best_params
+        optimization_progress[operation] = 100
         logger.info(f"Optimization completed for operation: {operation}")
     except Exception as e:
         logger.error(f"Error during optimization for operation {operation}: {str(e)}", exc_info=True)
     finally:
         optimization_in_progress.discard(operation)
-    
+
 @app.get("/optimization_result/{operation}")
 async def get_optimization_result(operation: str):
+    logger.info(f"Retrieving optimization result for operation: {operation}")
+    logger.info(f"Current progress: {optimization_progress.get(operation, 0)}")
     if operation in optimization_results:
         optimization_in_progress.discard(operation)
         return JSONResponse(content={'status': 'completed', 'best_params': optimization_results[operation], 'progress': 100})
     elif operation in optimization_in_progress:
         progress = optimization_progress.get(operation, 0)
+        logger.info(f"Optimization in progress. Current progress: {progress}")
         return JSONResponse(content={'status': 'in_progress', 'progress': progress})
     else:
+        logger.info(f"Optimization not started for operation: {operation}")
         return JSONResponse(content={'status': 'not_started', 'progress': 0})
+selected_objects = []
+cache = {}
 
+def get_fastsam_model():
+    global global_fastsam_model
+    if global_fastsam_model is None:
+        global_fastsam_model = FastSAM('FastSAM-x.pt')
+    return global_fastsam_model
 
+def get_cached_result(image_hash):
+    return cache.get(image_hash)
+
+def set_cached_result(image_hash, result):
+    cache[image_hash] = result
+
+def preprocess_image(image, target_size=(640, 640)):
+    return cv2.resize(image, target_size)
+
+def process_image_with_fastsam(image):
+    model = get_fastsam_model()
+    results = model(image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+    prompt_process = FastSAMPrompt(image, results, device='cpu')
+    ann = prompt_process.everything_prompt()
+    
+    if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
+        masks = ann[0].masks
+        if hasattr(masks, 'data'):
+            return masks.data.cpu().numpy()
+        elif hasattr(masks, 'numpy'):
+            return masks.numpy()
+        else:
+            logger.error(f"Unexpected type for masks in process_image_with_fastsam: {type(masks)}")
+            return None
+    else:
+        logger.error(f"Unexpected structure for ann in process_image_with_fastsam: {type(ann)}")
+        return None
+    
+def preprocess_image(image, target_size=(640, 640)):
+    return cv2.resize(image, target_size)
+
+    
 @app.get("/routes")
 async def list_routes():
     routes = [
