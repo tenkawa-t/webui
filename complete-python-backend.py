@@ -28,8 +28,10 @@ from functools import lru_cache
 
 # グローバル変数としてFastSAMモデルを保持
 global_fastsam_model = None
-
 fastsam_result = None
+# グローバル変数
+processed_image = None
+processed_masks = None
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -95,8 +97,10 @@ def decode_image(image_data):
     return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
 def encode_image(image):
-    _, buffer = cv2.imencode('.jpg', image)
-    return base64.b64encode(buffer).decode('utf-8')
+    _, buffer = cv2.imencode('.png', image)
+    encoded_image = base64.b64encode(buffer).decode('utf-8')
+    logger.info(f"Encoded image size: {len(encoded_image)} bytes")
+    return encoded_image
 
 def apply_operation(image, operation, params):
     if operation == 'grayscale':
@@ -411,64 +415,104 @@ def get_code_snippet(index, operation, params):
     
     return f"{comment}\n{code}"
 
-def get_nearest_object(image, x, y, max_distance=50):
+def get_nearest_object(image, x, y, mode='bbox', max_distance=50):
+    global processed_image, processed_masks
     try:
         logger.info(f"Processing request for coordinates ({x}, {y})")
-        # 画像を正規化
-        hashimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGRからRGBに変換
-        hashimage = (hashimage * 255).astype(np.uint8)  # 0-255の整数値に正規化
 
-        # Calculate image hash for caching
-        image_hash = hashlib.md5(hashimage.tobytes()).hexdigest()
-        logger.info(f"Image hash: {image_hash}")  # Add
-        
-        # Check cache
-        cached_result = get_cached_result(image_hash)
-        if cached_result is not None:
-            logger.info("Using cached FastSAM result")
-            masks_np = cached_result
-        else:
+        # 画像が既に処理されているかチェック
+        if processed_image is None:
             logger.info("Processing new image with FastSAM")
-            # Preprocess the image
-            pre_image = preprocess_image(image)
-        
+            processed_image = image.copy()
+            
+            # 前処理
+            preprocessed_image = preprocess_image(image)
+            
+            # FastSAMの処理
             model = get_fastsam_model()
-            results = model(pre_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+            results = model(preprocessed_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
             
-            logger.info("Creating FastSAM prompt")
-            prompt_process = FastSAMPrompt(pre_image, results, device='cpu')
-            
-            logger.info("Getting all objects")
+            prompt_process = FastSAMPrompt(preprocessed_image, results, device='cpu')
             ann = prompt_process.everything_prompt()
-            
-            logger.info(f"Type of ann: {type(ann)}")
             
             if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
                 masks = ann[0].masks
-                logger.info(f"Type of masks: {type(masks)}")
-                
-                # Convert Masks object to numpy array
                 if hasattr(masks, 'data'):
-                    masks_np = masks.data.cpu().numpy()
+                    processed_masks = masks.data.cpu().numpy()
                 elif hasattr(masks, 'numpy'):
-                    masks_np = masks.numpy()
+                    processed_masks = masks.numpy()
                 else:
                     logger.error(f"Unexpected type for masks: {type(masks)}")
                     return None
-                
-                # Cache the result
-                set_cached_result(image_hash, masks_np)
             else:
                 logger.error(f"Unexpected structure for ann: {type(ann)}")
                 return None
-        
-        logger.info(f"Shape of masks_np: {masks_np.shape}")
-        
+        else:
+            logger.info("Using cached FastSAM result")
+
+        # 以下、既存の近接オブジェクト検出のロジック
         nearest_object = None
-        min_distance = float('inf')
+        min_distance = float('inf')  
+
+    # try:
+    #     logger.info(f"Processing request for coordinates ({x}, {y})")
+    #     # 画像を正規化
+    #     hashimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGRからRGBに変換
+    #     hashimage = (hashimage * 255).astype(np.uint8)  # 0-255の整数値に正規化
+
+    #     # Calculate image hash for caching
+    #     image_hash = hashlib.md5(hashimage.tobytes()).hexdigest()
+    #     logger.info(f"Image hash: {image_hash}")  # Add
         
-        for i in range(masks_np.shape[0]):
-            mask = masks_np[i]
+    #     # Check cache
+    #     cached_result = get_cached_result(image_hash)
+    #     if cached_result is not None:
+    #         logger.info("Using cached FastSAM result")
+    #         masks_np = cached_result
+    #     else:
+    #         logger.info("Processing new image with FastSAM")
+    #         # Preprocess the image
+    #         pre_image = preprocess_image(image)
+        
+    #         model = get_fastsam_model()
+    #         results = model(pre_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+            
+    #         logger.info("Creating FastSAM prompt")
+    #         prompt_process = FastSAMPrompt(pre_image, results, device='cpu')
+            
+    #         logger.info("Getting all objects")
+    #         ann = prompt_process.everything_prompt()
+            
+    #         logger.info(f"Type of ann: {type(ann)}")
+            
+    #         if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
+    #             masks = ann[0].masks
+    #             logger.info(f"Type of masks: {type(masks)}")
+                
+    #             # Convert Masks object to numpy array
+    #             if hasattr(masks, 'data'):
+    #                 masks_np = masks.data.cpu().numpy()
+    #             elif hasattr(masks, 'numpy'):
+    #                 masks_np = masks.numpy()
+    #             else:
+    #                 logger.error(f"Unexpected type for masks: {type(masks)}")
+    #                 return None
+                
+    #             # Cache the result
+    #             set_cached_result(image_hash, masks_np)
+    #         else:
+    #             logger.error(f"Unexpected structure for ann: {type(ann)}")
+    #             return None
+        
+        # logger.info(f"Shape of masks_np: {masks_np.shape}")
+        
+        # nearest_object = None
+        # min_distance = float('inf')
+        
+        # for i in range(masks_np.shape[0]):
+        #     mask = masks_np[i]
+        for i in range(processed_masks.shape[0]):
+            mask = processed_masks[i]
             logger.info(f"Processing mask {i}, shape: {mask.shape}")
             
             if mask.ndim > 2:
@@ -491,17 +535,65 @@ def get_nearest_object(image, x, y, max_distance=50):
                 min_distance = min_dist
                 nearest_object = mask
         
+        # if nearest_object is not None:
+        #     logger.info("Nearest object found")
+
+        #     # オブジェクトの中心を計算
+        #     center = np.mean(np.argwhere(nearest_object), axis=0)
+        #     center = (int(center[1]), int(center[0]))  # (x, y) 形式に変換
+
+        #     if mode == 'circle':
+        #         # SelectedRegion オブジェクトとして保存
+        #         selected_regions.append(SelectedRegion(nearest_object, center))
+                
+        #         logger.info("Applying mask to image")
+        #         masked_image = cv2.bitwise_and(image, image, mask=nearest_object.astype(np.uint8))
+        #     elif mode == 'bbox':
+        #         # バウンディングボックスの描画
+        #         contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        #         if contours:
+        #             x, y, w, h = cv2.boundingRect(contours[0])
+        #             cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        #     elif mode == 'mask':
+        #         # マスクの描画（半透明のオーバーレイ）
+        #         overlay = image.copy()
+        #         color_mask = np.zeros_like(image, dtype=np.uint8)
+        #         color_mask[nearest_object > 0] = [0, 0, 255]  # 赤色のマスク
+        #         masked_image = cv2.addWeighted(color_mask, 0.5, overlay, 0.5, 0, image)
+        #     return masked_image
         if nearest_object is not None:
             logger.info("Nearest object found")
-            # オブジェクトの中心を計算
-            center = np.mean(np.argwhere(nearest_object), axis=0)
-            center = (int(center[1]), int(center[0]))  # (x, y) 形式に変換
-            # SelectedRegion オブジェクトとして保存
-            selected_regions.append(SelectedRegion(nearest_object, center))
-            
-            logger.info("Applying mask to image")
-            masked_image = cv2.bitwise_and(image, image, mask=nearest_object.astype(np.uint8))
-            return masked_image
+            result_image = image.copy()
+
+            if mode == 'circle':
+                # 円による描画
+                logger.info("Nearest object found")
+                contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    (x, y), radius = cv2.minEnclosingCircle(contours[0])
+                    center = (int(x), int(y))
+                    radius = int(radius)
+                    cv2.circle(result_image, center, radius, (0, 255, 0), 2)
+                    logger.info(f"Circle drawn at {center} with radius {radius}")
+            elif mode == 'bbox':
+                logger.info("Drawing bounding box")
+                # バウンディングボックスの描画
+                contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    x, y, w, h = cv2.boundingRect(contours[0])
+                    cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                    logger.info(f"Bounding box drawn at ({x}, {y}) with width {w} and height {h}")
+                else:
+                    logger.warning("No contours found for bbox mode")
+            elif mode == 'mask':
+                # マスクの描画（半透明のオーバーレイ）
+                logger.info("Drawing mask")
+                color_mask = np.zeros_like(result_image, dtype=np.uint8)
+                color_mask[nearest_object > 0] = [0, 0, 255]  # 赤色のマスク
+                cv2.addWeighted(color_mask, 0.5, result_image, 1, 0, result_image)
+
+            logger.info(f"Drawing completed for mode: {mode}")
+            return result_image
         else:
             logger.info("No object found near the specified coordinates")
             return None
@@ -540,25 +632,39 @@ async def clear_selected_regions_endpoint():
 @app.post("/get_nearest_object")
 async def get_nearest_object_endpoint(data: dict):
     try:
+
         image_data = data['image']
         x = data['x']
         y = data['y']
+        mode = data.get('mode', 'bbox')  # デフォルトは円
         
+        logger.info(f"Extracted data - x: {x}, y: {y}, mode: {mode}")
+        if image_data is None or x is None or y is None:
+            raise HTTPException(status_code=400, detail="Missing required data")
+
         image = decode_image(image_data)
-        logger.info(f"Image shape: {image.shape}, Coordinates: ({x}, {y})")
+        logger.info(f"Image shape: {image.shape}, Coordinates: ({x}, {y}), Mode: {mode}")
         
         result = get_nearest_object(image, x, y)
-        
+
         if result is not None:
             # 選択された領域を含む画像を作成
             result_with_regions = draw_selected_regions(image)
             result_image = encode_image(result_with_regions)
             return JSONResponse(content={'image': result_image})
         else:
+            logger.warning("No object found, sending error message")
             return JSONResponse(content={'message': 'No object found near the specified coordinates.'})
     except Exception as e:
         logger.error(f"Error in get_nearest_object_endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/reset_processed_image")
+async def reset_processed_image():
+    global processed_image, processed_masks
+    processed_image = None
+    processed_masks = None
+    return {"message": "Processed image cache has been reset."}
 
 def apply_optimized_circle_detection(image, params):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
