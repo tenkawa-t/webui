@@ -25,6 +25,20 @@ import numpy as np
 from sklearn.metrics import jaccard_score
 import hashlib
 from functools import lru_cache
+from typing import List
+
+class ClickedPoint(BaseModel):
+    x: int
+    y: int
+    mode: str
+
+class NearestObjectRequest(BaseModel):
+    image: str
+    x: int
+    y: int
+    mode: str
+    clickedObjects: List[ClickedPoint]
+
 
 # グローバル変数としてFastSAMモデルを保持
 global_fastsam_model = None
@@ -415,24 +429,20 @@ def get_code_snippet(index, operation, params):
     
     return f"{comment}\n{code}"
 
-def get_nearest_object(image, x, y, mode='bbox', max_distance=50):
+def get_nearest_objects(image, clicked_objects):
     global processed_image, processed_masks
     try:
-        logger.info(f"Processing request for coordinates ({x}, {y})")
+        logger.info(f"Processing request for {len(clicked_objects)} objects")
 
-        # 画像が既に処理されているかチェック
-        if processed_image is None:
+        if processed_image is None or processed_masks is None:
             logger.info("Processing new image with FastSAM")
             processed_image = image.copy()
             
-            # 前処理
-            preprocessed_image = preprocess_image(image)
-            
             # FastSAMの処理
             model = get_fastsam_model()
-            results = model(preprocessed_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
+            results = model(processed_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
             
-            prompt_process = FastSAMPrompt(preprocessed_image, results, device='cpu')
+            prompt_process = FastSAMPrompt(processed_image, results, device='cpu')
             ann = prompt_process.everything_prompt()
             
             if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
@@ -450,155 +460,65 @@ def get_nearest_object(image, x, y, mode='bbox', max_distance=50):
         else:
             logger.info("Using cached FastSAM result")
 
-        # 以下、既存の近接オブジェクト検出のロジック
-        nearest_object = None
-        min_distance = float('inf')  
+        result_image = image.copy()
 
-    # try:
-    #     logger.info(f"Processing request for coordinates ({x}, {y})")
-    #     # 画像を正規化
-    #     hashimage = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)  # BGRからRGBに変換
-    #     hashimage = (hashimage * 255).astype(np.uint8)  # 0-255の整数値に正規化
+        for obj in clicked_objects:
+            x, y, mode = obj.x, obj.y, obj.mode
+            nearest_object = None
+            min_distance = float('inf')
 
-    #     # Calculate image hash for caching
-    #     image_hash = hashlib.md5(hashimage.tobytes()).hexdigest()
-    #     logger.info(f"Image hash: {image_hash}")  # Add
-        
-    #     # Check cache
-    #     cached_result = get_cached_result(image_hash)
-    #     if cached_result is not None:
-    #         logger.info("Using cached FastSAM result")
-    #         masks_np = cached_result
-    #     else:
-    #         logger.info("Processing new image with FastSAM")
-    #         # Preprocess the image
-    #         pre_image = preprocess_image(image)
-        
-    #         model = get_fastsam_model()
-    #         results = model(pre_image, device='cpu', retina_masks=True, imgsz=1024, conf=0.4, iou=0.9)
-            
-    #         logger.info("Creating FastSAM prompt")
-    #         prompt_process = FastSAMPrompt(pre_image, results, device='cpu')
-            
-    #         logger.info("Getting all objects")
-    #         ann = prompt_process.everything_prompt()
-            
-    #         logger.info(f"Type of ann: {type(ann)}")
-            
-    #         if isinstance(ann, list) and len(ann) > 0 and hasattr(ann[0], 'masks'):
-    #             masks = ann[0].masks
-    #             logger.info(f"Type of masks: {type(masks)}")
+            for i, mask in enumerate(processed_masks):
+                logger.info(f"Processing mask {i}, shape: {mask.shape}")
                 
-    #             # Convert Masks object to numpy array
-    #             if hasattr(masks, 'data'):
-    #                 masks_np = masks.data.cpu().numpy()
-    #             elif hasattr(masks, 'numpy'):
-    #                 masks_np = masks.numpy()
-    #             else:
-    #                 logger.error(f"Unexpected type for masks: {type(masks)}")
-    #                 return None
+                if mask.ndim > 2:
+                    mask = mask.squeeze()
                 
-    #             # Cache the result
-    #             set_cached_result(image_hash, masks_np)
-    #         else:
-    #             logger.error(f"Unexpected structure for ann: {type(ann)}")
-    #             return None
-        
-        # logger.info(f"Shape of masks_np: {masks_np.shape}")
-        
-        # nearest_object = None
-        # min_distance = float('inf')
-        
-        # for i in range(masks_np.shape[0]):
-        #     mask = masks_np[i]
-        for i in range(processed_masks.shape[0]):
-            mask = processed_masks[i]
-            logger.info(f"Processing mask {i}, shape: {mask.shape}")
-            
-            if mask.ndim > 2:
-                mask = mask.squeeze()
-            
-            if mask.ndim != 2:
-                logger.warning(f"Skipping mask with unexpected shape: {mask.shape}")
-                continue
-            
-            where_result = np.where(mask)
-            if len(where_result) != 2:
-                logger.warning(f"Unexpected where result shape: {len(where_result)}")
-                continue
-            
-            coords = np.column_stack(where_result)
-            distances = np.sqrt(np.sum((coords - np.array([y, x]))**2, axis=1))
-            min_dist = np.min(distances) if distances.size > 0 else float('inf')
-            
-            if min_dist < min_distance and min_dist <= max_distance:
-                min_distance = min_dist
-                nearest_object = mask
-        
-        # if nearest_object is not None:
-        #     logger.info("Nearest object found")
-
-        #     # オブジェクトの中心を計算
-        #     center = np.mean(np.argwhere(nearest_object), axis=0)
-        #     center = (int(center[1]), int(center[0]))  # (x, y) 形式に変換
-
-        #     if mode == 'circle':
-        #         # SelectedRegion オブジェクトとして保存
-        #         selected_regions.append(SelectedRegion(nearest_object, center))
+                if mask.ndim != 2:
+                    logger.warning(f"Skipping mask with unexpected shape: {mask.shape}")
+                    continue
                 
-        #         logger.info("Applying mask to image")
-        #         masked_image = cv2.bitwise_and(image, image, mask=nearest_object.astype(np.uint8))
-        #     elif mode == 'bbox':
-        #         # バウンディングボックスの描画
-        #         contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        #         if contours:
-        #             x, y, w, h = cv2.boundingRect(contours[0])
-        #             cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-        #     elif mode == 'mask':
-        #         # マスクの描画（半透明のオーバーレイ）
-        #         overlay = image.copy()
-        #         color_mask = np.zeros_like(image, dtype=np.uint8)
-        #         color_mask[nearest_object > 0] = [0, 0, 255]  # 赤色のマスク
-        #         masked_image = cv2.addWeighted(color_mask, 0.5, overlay, 0.5, 0, image)
-        #     return masked_image
-        if nearest_object is not None:
-            logger.info("Nearest object found")
-            result_image = image.copy()
+                where_result = np.where(mask)
+                if len(where_result) != 2:
+                    logger.warning(f"Unexpected where result shape: {len(where_result)}")
+                    continue
+                
+                coords = np.column_stack(where_result)
+                distances = np.sqrt(np.sum((coords - np.array([y, x]))**2, axis=1))
+                min_dist = np.min(distances) if distances.size > 0 else float('inf')
+                
+                if min_dist < min_distance:
+                    min_distance = min_dist
+                    nearest_object = mask
 
-            if mode == 'circle':
-                # 円による描画
-                logger.info("Nearest object found")
-                contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    (x, y), radius = cv2.minEnclosingCircle(contours[0])
-                    center = (int(x), int(y))
-                    radius = int(radius)
-                    cv2.circle(result_image, center, radius, (0, 255, 0), 2)
-                    logger.info(f"Circle drawn at {center} with radius {radius}")
-            elif mode == 'bbox':
-                logger.info("Drawing bounding box")
-                # バウンディングボックスの描画
-                contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if contours:
-                    x, y, w, h = cv2.boundingRect(contours[0])
-                    cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                    logger.info(f"Bounding box drawn at ({x}, {y}) with width {w} and height {h}")
-                else:
-                    logger.warning("No contours found for bbox mode")
-            elif mode == 'mask':
-                # マスクの描画（半透明のオーバーレイ）
-                logger.info("Drawing mask")
-                color_mask = np.zeros_like(result_image, dtype=np.uint8)
-                color_mask[nearest_object > 0] = [0, 0, 255]  # 赤色のマスク
-                cv2.addWeighted(color_mask, 0.5, result_image, 1, 0, result_image)
+            if nearest_object is not None:
+                logger.info(f"Nearest object found for point ({x}, {y})")
 
-            logger.info(f"Drawing completed for mode: {mode}")
-            return result_image
-        else:
-            logger.info("No object found near the specified coordinates")
-            return None
+                if mode == 'circle':
+                    contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        (cx, cy), radius = cv2.minEnclosingCircle(contours[0])
+                        center = (int(cx), int(cy))
+                        radius = int(radius)
+                        cv2.circle(result_image, center, radius, (0, 255, 0), 2)
+                        logger.info(f"Circle drawn at {center} with radius {radius}")
+                elif mode == 'bbox':
+                    contours, _ = cv2.findContours(nearest_object.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    if contours:
+                        x, y, w, h = cv2.boundingRect(contours[0])
+                        cv2.rectangle(result_image, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                        logger.info(f"Bounding box drawn at ({x}, {y}) with width {w} and height {h}")
+                    else:
+                        logger.warning("No contours found for bbox mode")
+                elif mode == 'mask':
+                    color_mask = np.zeros_like(result_image, dtype=np.uint8)
+                    color_mask[nearest_object > 0] = [0, 0, 255]  # 赤色のマスク
+                    cv2.addWeighted(color_mask, 0.5, result_image, 1, 0, result_image)
+                    logger.info("Mask overlay applied")
+
+        logger.info("All objects processed")
+        return result_image
     except Exception as e:
-        logger.error(f"Error in get_nearest_object: {str(e)}", exc_info=True)
+        logger.error(f"Error in get_nearest_objects: {str(e)}", exc_info=True)
         raise
 
 def draw_selected_regions(image):
@@ -630,31 +550,20 @@ async def clear_selected_regions_endpoint():
     return JSONResponse(content={'message': 'All selected regions have been cleared.'})
 
 @app.post("/get_nearest_object")
-async def get_nearest_object_endpoint(data: dict):
+async def get_nearest_object_endpoint(request: NearestObjectRequest):
     try:
-
-        image_data = data['image']
-        x = data['x']
-        y = data['y']
-        mode = data.get('mode', 'bbox')  # デフォルトは円
+        image_data = request.image
+        x = request.x
+        y = request.y
+        mode = request.mode
+        clicked_objects = request.clickedObjects
         
-        logger.info(f"Extracted data - x: {x}, y: {y}, mode: {mode}")
-        if image_data is None or x is None or y is None:
-            raise HTTPException(status_code=400, detail="Missing required data")
-
         image = decode_image(image_data)
-        logger.info(f"Image shape: {image.shape}, Coordinates: ({x}, {y}), Mode: {mode}")
         
-        result = get_nearest_object(image, x, y)
-
-        if result is not None:
-            # 選択された領域を含む画像を作成
-            result_with_regions = draw_selected_regions(image)
-            result_image = encode_image(result_with_regions)
-            return JSONResponse(content={'image': result_image})
-        else:
-            logger.warning("No object found, sending error message")
-            return JSONResponse(content={'message': 'No object found near the specified coordinates.'})
+        result_image = get_nearest_objects(image, clicked_objects + [ClickedPoint(x=x, y=y, mode=mode)])
+        
+        result_image_encoded = encode_image(result_image)
+        return JSONResponse(content={'image': result_image_encoded})
     except Exception as e:
         logger.error(f"Error in get_nearest_object_endpoint: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

@@ -52,6 +52,12 @@
             background-color: #f1f1f1;
             color: black;
         }
+        #detectedClickObject {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            border: 0; /* デバッグ用 */
+        }
     </style>
 </head>
 <body>
@@ -64,7 +70,6 @@
             <h2>Processed Image</h2>
             <img id="processedImage" src="" alt="Processed Image">
             <!-- <img id="processedImage" src="" alt="Processed Image" onclick="getCoordinates(event)"> -->
-
         </div>
         <div class="pipeline-container">
             <h2>Processing Pipeline</h2>
@@ -116,7 +121,12 @@
                 <button id="mask-mode" class="mode-button" onclick="setDetectionMode('mask')">Segmentation Mask</button>
             </div>
             <h2>Detected Click Object</h2>
+            <!-- <img id="detectedClickObject" src="" alt="Detected Click Object">
             <img id="detectedClickObject" src="" alt="Detected Click Object" onclick="getCoordinates(event)" style="display: none;">
+            <div id="allClickedObjects"></div> -->
+            <img id="detectedClickObject" src="" alt="Detected Object" style="display:none;">
+            <div id="allClickedObjects"></div>
+            <button onclick="clearClickedObjects()">Clear All</button>
             <button onclick="clearSelectedRegions()" style="display: none;" id="clearRegionsButton">Clear Selected Regions</button>
             <div id="optimization-progress" style="display: none;">
                 <h3>Optimization Progress</h3>
@@ -132,7 +142,7 @@
 
     <script>
         let pipeline = [];
-
+        let clickedObjects = [];
         function addOperation(operation) {
             let params = {};
             switch(operation) {
@@ -278,8 +288,8 @@
             reader.readAsDataURL(file);
         })
         .catch((error) => {
-        console.error('Error resetting processed image cache:', error);
-        alert('An error occurred while resetting the image cache: ' + error.message);
+            console.error('Error resetting processed image cache:', error);
+            alert('An error occurred while resetting the image cache: ' + error.message);
         });
         }
 
@@ -551,55 +561,286 @@
             getDetectedClickObject(lastClickX, lastClickY);
         }
 
+        // function getDetectedClickObject(x, y) {
+        //     console.log("getDetectedClickObject called");
+        //     console.log("Arguments:", x, y, currentDetectionMode);
+
+        //     const detectedClickObject = document.getElementById('detectedClickObject');    
+        //     fetch('/get_nearest_object', {
+        //         method: 'POST',
+        //         headers: { 'Content-Type': 'application/json' },
+        //         body: JSON.stringify({ 
+        //             image: detectedClickObject.src,
+        //             x: x,
+        //             y: y,
+        //             mode: currentDetectionMode 
+        //         }),
+        //     })
+        //     .then(response => {
+        //         console.log("Response status:", response.status);
+
+        //         if (!response.ok) {
+        //             return response.text().then(text => {
+        //                 throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
+        //             });
+        //         }
+        //         return response.json();
+        //     })
+        //     .then(data => {
+        //         console.log("Received data:", data);
+        //         if (data.image) {
+        //             console.log("Image data size:", data.image.length);
+        //             detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+        //             detectedClickObject.style.display = 'block';
+        //             console.log("Image src set to:", detectedClickObject.src.substring(0, 100) + "...");
+            
+        //             // 画像のロードを確認
+        //             detectedClickObject.onload = function() {
+        //                 console.log("Image loaded successfully");
+        //             };
+        //             detectedClickObject.onerror = function() {
+        //                 console.error("Error loading image");
+        //             };
+        //         } else {
+        //             console.log("No image data received");
+        //             alert(data.message || 'No object found near the specified coordinates.');
+        //         }
+        //     })
+        //     .catch((error) => {
+        //         console.error('Error:', error);
+        //         alert('An error occurred while getting the detected click object: ' + error.message);
+        //     });
+        // }
         function getDetectedClickObject(x, y) {
             console.log("getDetectedClickObject called");
             console.log("Arguments:", x, y, currentDetectionMode);
 
-            const detectedClickObject = document.getElementById('detectedClickObject');    
+            const originalImage = document.getElementById('originalImage');
+            
             fetch('/get_nearest_object', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ 
-                    image: detectedClickObject.src,
+                    image: originalImage.src,
                     x: x,
                     y: y,
-                    mode: currentDetectionMode 
+                    mode: currentDetectionMode,
+                    clickedObjects: clickedObjects
                 }),
             })
-            .then(response => {
-                console.log("Response status:", response.status);
-
-                if (!response.ok) {
-                    return response.text().then(text => {
-                        throw new Error(`HTTP error! status: ${response.status}, message: ${text}`);
-                    });
-                }
-                return response.json();
-            })
+            .then(response => response.json())
             .then(data => {
                 console.log("Received data:", data);
                 if (data.image) {
                     console.log("Image data size:", data.image.length);
-                    detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
-                    detectedClickObject.style.display = 'block';
-                    console.log("Image src set to:", detectedClickObject.src.substring(0, 100) + "...");
-            
-                    // 画像のロードを確認
-                    detectedClickObject.onload = function() {
-                        console.log("Image loaded successfully");
-                    };
-                    detectedClickObject.onerror = function() {
-                        console.error("Error loading image");
-                    };
+
+                    // 新しいオブジェクトを追加
+                    clickedObjects.push({
+                        x: x,
+                        y: y,
+                        mode: currentDetectionMode
+                    });
+
+
+                    const detectedClickObject = document.getElementById('detectedClickObject');
+                    if (detectedClickObject) {
+                        detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+                        detectedClickObject.style.display = 'block';
+                    } else {
+                        console.error("detectedClickObject element not found");
+                    }
+                    // ログ出力
+                    logClickedObjects();
                 } else {
                     console.log("No image data received");
-                    alert(data.message || 'No object found near the specified coordinates.');
+                    alert('No object found near the specified coordinates.');
                 }
             })
             .catch((error) => {
                 console.error('Error:', error);
                 alert('An error occurred while getting the detected click object: ' + error.message);
             });
+        }
+        // function getDetectedClickObject(x, y) {
+        //     console.log("getDetectedClickObject called");
+        //     console.log("Arguments:", x, y, currentDetectionMode);
+        //     const detectedClickObject = document.getElementById('detectedClickObject');
+        //     const originalImage = document.getElementById('originalImage');
+            
+        //     fetch('/get_nearest_object', {
+        //         method: 'POST',
+        //         headers: { 'Content-Type': 'application/json' },
+        //         body: JSON.stringify({ 
+        //             image: originalImage.src,
+        //             x: x,
+        //             y: y,
+        //             mode: currentDetectionMode,
+        //             clickedObjects: clickedObjects  // 過去のクリックオブジェクトを送信
+        //         }),
+        //     })
+        //     .then(response => response.json())
+        //     .then(data => {
+        //         console.log("Received data:", data);
+        //         if (data.image) {
+        //             console.log("Image data size:", data.image.length);
+        //             const img = document.createElement('img');
+        //             img.onload = function() {
+        //                 console.log("Image loaded successfully");
+        //                 console.log("Image dimensions:", this.width, "x", this.height);
+        //             };
+        //             img.src = 'data:image/jpeg;base64,' + data.image;
+                    
+        //             // 既存の画像要素を更新
+        //             const detectedClickObject = document.getElementById('detectedClickObject');
+        //             detectedClickObject.src = img.src;
+        //             detectedClickObject.style.display = 'block';
+
+        //             // 新しい画像要素を追加
+        //             document.body.appendChild(img);
+
+        //             // clickedObjects 配列に追加
+        //             clickedObjects.push({
+        //                 image: data.image,
+        //                 x: x,
+        //                 y: y
+        //             });
+
+        //             // ログ出力
+        //             logClickedObjects();
+        //     // .then(data => {
+        //     //     console.log("Received data:", data);
+        //     //     if (data.image) {
+        //     //         const detectedClickObject = document.getElementById('detectedClickObject');
+        //     //         detectedClickObject.onload = function() {
+        //     //             console.log("Image loaded successfully");
+        //     //             console.log("Image dimensions:", this.width, "x", this.height);
+        //     //         };
+        //     //         detectedClickObject.onerror = function() {
+        //     //             console.error("Error loading image");
+        //     //         };
+        //     //         detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+        //     //         detectedClickObject.style.display = 'block';
+
+        //     //         // 新しい画像要素を作成して追加
+        //     //         const newImg = document.createElement('img');
+        //     //         newImg.src = 'data:image/jpeg;base64,' + data.image;
+        //     //         newImg.style.maxWidth = '100%';
+        //     //         newImg.style.height = 'auto';
+        //     //         document.body.appendChild(newImg);
+        //     //         const newTab = window.open();
+        //     //         newTab.document.body.innerHTML = '<img src="data:image/jpeg;base64,' + data.image + '">';
+        //     //         // 最新のオブジェクトを表示
+        //     //         // displayDetectedObject(data.image);
+                    
+        //     //         // すべてのオブジェクトを表示
+        //     //         displayAllClickedObjects();
+        //     //         logClickedObjects();  // ここでログを出力
+        //         } else {
+        //             console.log("No image data received");
+        //         }
+        //     })
+        //     .catch((error) => {
+        //         console.error('Error:', error);
+        //     });
+        // }
+        // function getDetectedClickObject(x, y) {
+        //     console.log("getDetectedClickObject called");
+        //     console.log("Arguments:", x, y, currentDetectionMode);
+
+        //     const detectedClickObject = document.getElementById('detectedClickObject');  
+        //     const processedImage = document.getElementById('processedImage');  
+        //     fetch('/get_nearest_object', {
+        //         method: 'POST',
+        //         headers: { 'Content-Type': 'application/json' },
+        //         body: JSON.stringify({ 
+        //             image: detectedClickObject.src,
+        //             // image: processedImage.src,
+        //             x: x,
+        //             y: y,
+        //             mode: currentDetectionMode 
+        //         }),
+        //     })
+        //     .then(response => {
+        //         console.log("Response status:", response.status);
+        //         if (!response.ok) {
+        //             throw new Error(`HTTP error! status: ${response.status}`);
+        //         }
+        //         return response.json();
+        //     })
+        //     .then(data => {
+        //         console.log("Received data:", data);
+        //         if (data.image) {
+        //             console.log("Image data size:", data.image.length);
+        //             const img = new Image();
+        //             img.onload = () => {
+        //                 console.log("Image loaded successfully");
+        //                 detectedClickObject.src = img.src;
+        //                 detectedClickObject.style.display = 'block';
+        //             };
+        //             img.onerror = () => {
+        //                 console.error("Error loading image");
+        //             };
+        //             img.src = 'data:image/jpeg;base64,' + data.image;
+        //         // console.log("Received data:", data);
+        //         // if (data.image) {
+        //         //     console.log("Image data size:", data.image.length);
+        //         //     detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+        //         //     detectedClickObject.style.display = 'block';
+        //         //     console.log("Image src set to:", detectedClickObject.src.substring(0, 100) + "...");
+        //         } else {
+        //             console.log("No image data received");
+        //             alert('No object found near the specified coordinates.');
+        //         }
+        //     })
+        //     .catch((error) => {
+        //         console.error('Error:', error);
+        //         alert('An error occurred while getting the detected click object: ' + error.message);
+        //     });
+        // }
+        function displayDetectedObject(imageData) {
+            const detectedClickObject = document.getElementById('detectedClickObject');
+            detectedClickObject.src = 'data:image/jpeg;base64,' + imageData;
+            detectedClickObject.style.display = 'block';
+        }
+
+        function displayDetectedObject(imageData, x, y, mode, index) {
+            const container = document.getElementById('detectedObjects');
+
+            const objContainer = document.createElement('div');
+            objContainer.className = 'detected-object';
+
+            const img = document.createElement('img');
+            img.src = 'data:image/jpeg;base64,' + imageData;
+            img.alt = `Clicked Object ${index}`;
+            img.style.maxWidth = '200px';
+            img.style.height = 'auto';
+
+            const info = document.createElement('p');
+            info.textContent = `Object ${index}: (${x}, ${y}) - ${mode}`;
+
+            objContainer.appendChild(img);
+            objContainer.appendChild(info);
+            container.appendChild(objContainer);
+        }
+
+        function clearDetectedObjects() {
+            clickedObjects = [];
+            const detectedObjectsImage = document.getElementById('detectedObjectsImage');
+            detectedObjectsImage.style.display = 'none';
+        }
+
+        function logClickedObjects() {
+            console.log("Current clickedObjects:");
+            clickedObjects.forEach((obj, index) => {
+                console.log(`Object ${index + 1}: (${obj.x}, ${obj.y}) - ${obj.mode}`);
+            });
+        }
+        function clearDetectedObjects() {
+            clickedObjects = [];
+            const detectedClickObject = document.getElementById('detectedClickObject');
+            if (detectedClickObject) {
+                detectedClickObject.style.display = 'none';
+            }
         }
 
         function clearSelectedRegions() {
@@ -627,6 +868,6 @@
         document.addEventListener('DOMContentLoaded', function() {
             setDetectionMode('bbox');  // デフォルトモードを'bbox'に設定
         });
-            </script>
+        </script>
 </body>
 </html>
