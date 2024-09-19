@@ -133,6 +133,9 @@
                 <progress id="progress-bar" value="0" max="100"></progress>
                 <span id="progress-percentage">0%</span>
             </div>
+            <h3>Detected Object Info</h3>
+            <ul id="detectedObjectInfo"></ul>
+            <button onclick="clearAllObjects()">Clear All Objects</button>
         </div>
         <div class="code-container">
             <h2>Processing Code</h2>
@@ -143,6 +146,7 @@
     <script>
         let pipeline = [];
         let clickedObjects = [];
+        let allObjectInfo = [];  // すべてのオブジェクト情報を保持するグローバル変数
         function addOperation(operation) {
             let params = {};
             switch(operation) {
@@ -266,7 +270,7 @@
                         processedImg.src = 'data:image/jpeg;base64,' + data.image;
                         
                         const detectedClickObject = document.getElementById('detectedClickObject');
-                        detectedClickObject.src = processedImg.src;  // 初期状態ではprocessedImageと同じ画像を設定
+                        detectedClickObject.src = originalImage.src;  // 初期状態ではprocessedImageと同じ画像を設定
                         detectedClickObject.style.display = 'block';
                         detectedClickObject.onclick = getCoordinates;
                         
@@ -378,8 +382,8 @@
             }
 
             const nTrials = parseInt(document.getElementById('n-trials').value, 10);
-            if (isNaN(nTrials) || nTrials < 1 || nTrials > 100) {
-                alert('Please enter a valid number of trials (1-100).');
+            if (isNaN(nTrials) || nTrials < 1 || nTrials > 10000) {
+                alert('Please enter a valid number of trials (1-10000).');
                 return;
             }
 
@@ -396,7 +400,8 @@
                     body: JSON.stringify({ 
                         image: e.target.result, 
                         operation: currentOperation,
-                        n_trials: nTrials
+                        n_trials: nTrials,
+                        object_info: allObjectInfo  // 全てのオブジェクト情報を送信
                     }),
                 })
                 .then(response => {
@@ -633,22 +638,85 @@
                 console.log("Received data:", data);
                 if (data.image) {
                     console.log("Image data size:", data.image.length);
+                // オブジェクト情報をリセット
+                allObjectInfo = []; // ここでリセットします
 
-                    // 新しいオブジェクトを追加
-                    clickedObjects.push({
-                        x: x,
-                        y: y,
-                        mode: currentDetectionMode
+                // 新しいオブジェクトを追加
+                clickedObjects.push({
+                    x: x,
+                    y: y,
+                    mode: currentDetectionMode
+                });
+
+                const detectedClickObject = document.getElementById('detectedClickObject');
+                if (detectedClickObject) {
+                    detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+                    detectedClickObject.style.display = 'block';
+                } else {
+                    console.error("detectedClickObject element not found");
+                }
+
+                // object_info を allObjectInfo に追加
+                if (data.object_info) {
+                    data.object_info.forEach(newObjInfo => {
+                        allObjectInfo.push(newObjInfo); // 新しいオブジェクト情報を全て追加
                     });
+                }
+                displayDetectedObjectInfo(allObjectInfo); // リセット後のデータを表示
+                    // // 新しいオブジェクトを追加
+                    // clickedObjects.push({
+                    //     x: x,
+                    //     y: y,
+                    //     mode: currentDetectionMode
+                    // });
 
 
-                    const detectedClickObject = document.getElementById('detectedClickObject');
-                    if (detectedClickObject) {
-                        detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
-                        detectedClickObject.style.display = 'block';
-                    } else {
-                        console.error("detectedClickObject element not found");
-                    }
+                    // const detectedClickObject = document.getElementById('detectedClickObject');
+                    // if (detectedClickObject) {
+                    //     detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+                    //     detectedClickObject.style.display = 'block';
+                    // } else {
+                    //     console.error("detectedClickObject element not found");
+                    // }
+                    // // object_info を allObjectInfo に追加する前に重複チェック
+                    // if (data.object_info) {
+                    //     data.object_info.forEach(newObjInfo => {
+                    //         // 既存データを確認し、存在する場合は更新、存在しない場合は追加
+                    //         const existingIndex = findExistingObjectIndex(newObjInfo, allObjectInfo);
+                    //         if (existingIndex === -1) {
+                    //             allObjectInfo.push(newObjInfo); // 新規オブジェクトを追加
+                    //         } else {
+                    //             allObjectInfo[existingIndex] = newObjInfo; // 既存オブジェクトを更新
+                    //         }
+                    //     });
+                    // }
+
+                    // const newObject = { x: x, y: y, mode: currentDetectionMode };
+                    // const isDuplicate = clickedObjects.some(obj => 
+                    //     obj.x === newObject.x && obj.y === newObject.y && obj.mode === newObject.mode
+                    // );
+                    // console.log(newObject);
+                    // console.log(allObjectInfo);
+                    // if (!isDuplicate) {
+                    //     clickedObjects.push(newObject);
+                    // }
+
+                    // const detectedClickObject = document.getElementById('detectedClickObject');
+                    // detectedClickObject.src = 'data:image/jpeg;base64,' + data.image;
+                    // detectedClickObject.style.display = 'block';
+
+                    // // object_info を allObjectInfo に追加する前に重複チェック
+                    // if (data.object_info) {
+                    //     data.object_info.forEach(newObjInfo => {
+                    //         const existingIndex = findExistingObjectIndex(newObjInfo, allObjectInfo);
+                    //         if (existingIndex === -1) {
+                    //             allObjectInfo.push(newObjInfo); // 重複していない場合に追加
+                    //         } else {
+                    //             allObjectInfo[existingIndex] = newObjInfo; // 重複している場合に更新
+                    //         }
+                    //     });
+                    // }
+                    // displayDetectedObjectInfo(allObjectInfo);
                     // ログ出力
                     logClickedObjects();
                 } else {
@@ -659,6 +727,53 @@
             .catch((error) => {
                 console.error('Error:', error);
                 alert('An error occurred while getting the detected click object: ' + error.message);
+            });
+        }
+        function displayDetectedObjectInfo(objectInfo) {
+            const detectedObjectInfoElement = document.getElementById('detectedObjectInfo');
+            detectedObjectInfoElement.innerHTML = ''; // 一度クリア
+
+            objectInfo.forEach((info, index) => {
+                const li = document.createElement('li');
+                let objectDetails = `Object ${index + 1}: (${info.x}, ${info.y}) - ${info.mode}`;
+                
+                if (info.mode === 'circle') {
+                    objectDetails += `, Center: (${info.cx}, ${info.cy}), Radius: ${info.radius}`;
+                } else if (info.mode === 'bbox') {
+                    objectDetails += `, Bounding Box: (${info.x}, ${info.y}, ${info.width}, ${info.height})`;
+                }
+                
+                li.textContent = objectDetails;
+                detectedObjectInfoElement.appendChild(li);
+            });
+        }
+        // 既存のオブジェクト情報があるか確認する関数
+        function findExistingObjectIndex(newObjectInfo, allObjectInfo) {
+            const threshold = 5;  // 許容する座標のズレ (ピクセル単位)
+            for (let i = 0; i < allObjectInfo.length; i++) {
+                const existingObject = allObjectInfo[i];
+                const distance = Math.sqrt(
+                    Math.pow(existingObject.cx - newObjectInfo.cx, 2) + Math.pow(existingObject.cy - newObjectInfo.cy, 2)
+                );
+                if (distance < threshold && existingObject.mode === newObjectInfo.mode) {
+                    return i;  // 既存のオブジェクトが見つかった場合、そのインデックスを返す
+                }
+            }
+            return -1;  // 見つからない場合は -1 を返す
+        }
+        function clearAllObjects() {
+            allObjectInfo = [];  // 全てのオブジェクト情報をリセット
+            clickedObjects = [];  // クリックされたオブジェクトもリセット
+            document.getElementById('detectedObjectInfo').innerHTML = '';  // 表示をクリア
+        }
+        function isObjectAlreadyAdded(newObjectInfo, allObjectInfo) {
+            // 座標の微妙な違いを許容しつつ、重複チェックを行う
+            const threshold = 5;  // 許容する座標のズレ (ピクセル単位)
+            return allObjectInfo.some(info => {
+                const distance = Math.sqrt(
+                    Math.pow(info.cx - newObjectInfo.cx, 2) + Math.pow(info.cy - newObjectInfo.cy, 2)
+                );
+                return distance < threshold && info.mode === newObjectInfo.mode;
             });
         }
         // function getDetectedClickObject(x, y) {
