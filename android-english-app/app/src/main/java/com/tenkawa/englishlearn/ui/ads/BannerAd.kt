@@ -1,5 +1,7 @@
 package com.tenkawa.englishlearn.ui.ads
 
+import android.util.Log
+import android.view.View
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -7,6 +9,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import com.google.android.gms.ads.AdRequest
 import com.google.android.gms.ads.AdSize
 import com.google.android.gms.ads.AdView
+
+private const val TAG = "BannerAd"
 
 /**
  * Displays a banner ad.
@@ -21,10 +25,16 @@ fun BannerAd(modifier: Modifier = Modifier, adUnitId: String = TEST_BANNER_UNIT_
     AndroidView(
         modifier = modifier.fillMaxWidth(),
         factory = { context ->
-            AdView(context).apply {
-                setAdSize(AdSize.BANNER)
-                this.adUnitId = adUnitId
-                loadAd(AdRequest.Builder().build())
+            try {
+                AdView(context).apply {
+                    setAdSize(AdSize.BANNER)
+                    this.adUnitId = adUnitId
+                    loadAd(AdRequest.Builder().build())
+                }
+            } catch (t: Throwable) {
+                // A missing/broken Google Play services install shouldn't take the whole app down.
+                Log.e(TAG, "Failed to create banner ad", t)
+                View(context)
             }
         }
     )
